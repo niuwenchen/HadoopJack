@@ -14,7 +14,8 @@ Hadoop有一个getmerge 命令，用于将一组HDFS文件在复制到本地计�
     Hadoop文件API使用Path对象来编制文件和目录名，使用FileStatus对象类存储文件和目录的元数据。
     
     注意： 具体的文件形式无需关注，和Java 中的一样。
-    http://hadoop.apache.org/docs/stable/api/  中的FileSystem 均有讲。
+    http://hadoop.apache.org/docs/stable/api/  
+    中的FileSystem 均有讲。
     
 
 
