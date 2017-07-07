@@ -139,7 +139,7 @@ InputFormat:TextInputFormat 是默认实现，从TextInputFormat返回的键为�
 ### OutputFormat
 RecordWriter 对象将输出结果进行格式化，而RecordReader对输入格式进行解析
 
-    TextOutputFormat<K,V>
+    TextOutputFormat<K,V>   为每个记录写为一行文本，键和值以字符串的形式写入，并以制表符分隔
     SequenceFileOutputFormat<K,V>
     NullOutputFormat
     
