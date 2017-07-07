@@ -81,6 +81,7 @@ public class MapperCombinerReducer extends Configured implements Tool {
         job.setOutputKeyClass(Text.class);
         job.setOutputValueClass(Text.class);
 
+            JobClient.runJob(job);
         return 0;
     }
 
