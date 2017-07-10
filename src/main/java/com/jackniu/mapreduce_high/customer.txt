@@ -1,0 +1,17 @@
+Customer ID,Name,Phone Number
+1,Stephanie Leung,555-555-5555
+2,Edward Kim,123-456-7890
+3,Jose Madriz,281-330-8004
+4,David Stork,408-555-0000
+
+Customer ID,Order ID,Prive,Purchase Date
+3,A,12.95,02-Jun-2008
+1,B,88.25,20-May-2008
+2,C,32.00,30-Nov-2007
+3,D,25.02,22-Jan-2009
+
+Customers 和 Orders 做内联结，预期的输出如下：
+1,Stephanie Leung,555-555-5555,B,88.25,20-May-2008
+2,Edward Kim,123-456-7890,C,32.00,30-Nov-2007
+3,Jose Madriz,281-330-8004,A,12.95,02-Jun-2008
+3,Jose Madriz,281-330-8004,D,25.02,22-Jan-2009
