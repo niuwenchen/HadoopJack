@@ -23,5 +23,49 @@ Hadoop: 通过Job和JobControl类来管理这种(非线性)作业之间依赖，
     x.addDependingJob(y)
     JobControl.addJob(job)
     JobControl.run()方法，生成一个线程来提交作业并监督执行。
+    JobControl.getFailedJobs() JobControl.getFInished() 监控Job任务的执行。
     
 ### 5.1.3 预处理和后处理阶段的链接
+
+    使用ChainMapper和ChainReducer所生产的作业表达式如下
+    MAP+ | REDUCE | MAP+
+    预处理： 多个Mapper，reduce之后，执行多个Mapper 执行后处理
+    全部预处理和后处理步骤在单一的作业中运行，不会生成中间文件。
+    
+    ChainMapper.addMapper(job,Map4.class,Text.class,Text.class,Text.class,Text.class,true,map4conf);
+    
+说明：
+
+    （1）全局JobConf对象， 作业名，输入输出路径。
+    （2） 本地JobConf对象采用一个新的JobConf对象，且在初始化时不设默认值——new JobConf(false)
+    （3） byValue: 标准的Mapper模型中，键值对的输出在序列化之后写入磁盘，等待被洗牌到一个可能完全不同的节点上，形式上认为这个过程采用的是值传递，发送的是键值对的副本。
+            如果Map不改变kv值，则buvalue为false获得一定的性能，最后设置为byValue=true，采用值传递。
+            
+## 5.2 连接不同来源的数据
+cite75_99.txt: 专利的引用数据
+apat63_99.txt: 专利数据中的国家信息
+
+在Mysql中联结和简单，
+
+### 5.2.1 Reduce侧的联结
+Hadoop 有一个名为datajoin的contrib软件包，数据连接的通用框架。 datajoin/hadoop-*-datajoin.jar
+
+    /opt/hadoop/share/hadoop/tools/lib
+    reduce侧联结: repartitioned join（重分区联结）， repartitioned sort-merge join(重分区排序-合并联结)
+   
+MapReduce范式每次以无状态的方式处理一个记录。如果想保持一些状态信息，就得保持记录的状态
+groupkey的作用就是数据库中的join key(联结键)。
+
+1 数据流
+    
+    1,Stephanie Leung,555-555-5555
+    group key, Coutomers 为Tag
+    
+    重分区联结中，mapper首先用一个组键和一个标签封装每个记录。组键为联结属性，标签记录数据源
+    
+2 DataJoin软件包实现联结
+
+    特殊的类型: TaggedMapOutput: 组键为Text，值为TaggedMapOutput类型
+    子类实现TaggedMapOutput， 并为Writable类型
+    
+
