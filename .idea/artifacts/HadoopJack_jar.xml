@@ -3,6 +3,7 @@
     <output-path>$PROJECT_DIR$/out/artifacts/HadoopJack_jar</output-path>
     <root id="archive" name="HadoopJack.jar">
       <element id="module-output" name="HadoopJack" />
+      <element id="library" level="project" name="Maven: org.apache.hadoop:hadoop-datajoin:2.6.0" />
     </root>
   </artifact>
 </component>
