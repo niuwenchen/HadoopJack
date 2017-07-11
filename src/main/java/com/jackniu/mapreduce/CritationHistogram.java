@@ -18,10 +18,12 @@ import java.util.Iterator;
 public class CritationHistogram extends Configured implements Tool{
 
     public static class MapClass extends  MapReduceBase implements  Mapper<Text,Text,IntWritable,IntWritable>{
+        static enum ClaimsCounters {MISSING,QUOTED};
         private final static IntWritable uno= new IntWritable(1);
         private IntWritable  critationCount = new IntWritable();
         public void map(Text text, Text text2, OutputCollector<IntWritable, IntWritable> outputCollector, Reporter reporter) throws IOException {
             critationCount.set(Integer.parseInt(text2.toString()));
+            reporter.incrCounter(ClaimsCounters.QUOTED,1);
             outputCollector.collect(critationCount,uno);
         }
     }
