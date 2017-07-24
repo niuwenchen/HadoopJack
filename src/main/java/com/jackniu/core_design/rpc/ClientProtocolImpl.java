@@ -1,7 +1,5 @@
 package com.jackniu.core_design.rpc;
 
-import org.apache.hadoop.hdfs.protocol.ClientProtocol;
-
 import java.io.IOException;
 
 /**
@@ -17,7 +15,7 @@ public class ClientProtocolImpl implements  CLientProtocol {
     }
 
     public long getProtocolVersion(String s, long l) throws IOException {
-        return CLientProtocol.versionID;
+        return versionID;
 //        return ClientProtocol.versionID;
     }
 
