@@ -16,3 +16,7 @@ public class ClientMain {
         String results=proxy.echo("result");
     }
 }
+
+
+
+

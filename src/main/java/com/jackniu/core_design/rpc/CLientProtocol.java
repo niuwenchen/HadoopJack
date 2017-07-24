@@ -13,3 +13,6 @@ public interface CLientProtocol  extends org.apache.hadoop.ipc.VersionedProtocol
     int add(int v1,int v2) throws IOException;
 
 }
+
+
+
