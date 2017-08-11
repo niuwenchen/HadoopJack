@@ -10,8 +10,11 @@ import java.io.IOException;
  */
 public class ServerMain {
     public static void main(String[] args) throws IOException {
-        RPC.Server server =RPC.getServer(new ClientProtocolImpl(),"127.0.0.1",2181,5,false,new Configuration());
-        server.start();
+//        RPC.Server server =RPC.getServer(new ClientProtocolImpl(),"127.0.0.1",2181,5,false,new Configuration());
+//        server.start();
+
+//        RPC.Server server =RPC.Server.bind();
+//        server.start();
     }
 }
 

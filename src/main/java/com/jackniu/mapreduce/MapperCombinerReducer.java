@@ -10,7 +10,7 @@ import org.apache.hadoop.mapred.*;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
-import javax.servlet.jsp.tagext.TagExtraInfo;
+
 import java.io.IOException;
 import java.util.Iterator;
 

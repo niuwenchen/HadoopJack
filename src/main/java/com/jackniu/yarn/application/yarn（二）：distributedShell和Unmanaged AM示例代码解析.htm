@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html>
+<script>
+  var _hmt = _hmt || [];
+  (function () {
+    var hm = document.createElement("script");
+    hm.src = "//hm.baidu.com/hm.js?28bfa356a7c60e170822a01142cf208e";
+    var s = document.getElementsByTagName("script")[0];
+    s.parentNode.insertBefore(hm, s);
+  })();
+</script>
+<script>
+  var _hmt = _hmt || [];
+  (function () {
+    var hm = document.createElement("script");
+    hm.src = "https://hm.baidu.com/hm.js?006f950051ffee9bb4c2829f9975735f";
+    var s = document.getElementsByTagName("script")[0];
+    s.parentNode.insertBefore(hm, s);
+  })();
+</script>
+<script>
+  var _hmt = _hmt || [];
+  (function () {
+    var hm = document.createElement("script");
+    hm.src = "https://hm.baidu.com/hm.js?81ff125faf375c17e279c8e4fe06d051";
+    var s = document.getElementsByTagName("script")[0];
+    s.parentNode.insertBefore(hm, s);
+  })();
+
+</script>
+<script>
+  (function () {
+    var bp = document.createElement('script');
+    var curProtocol = window.location.protocol.split(':')[0];
+    if (curProtocol === 'https') {
+      bp.src = 'https://zz.bdstatic.com/linksubmit/push.js';
+    }
+    else {
+      bp.src = 'http://push.zhanzhang.baidu.com/push.js';
+    }
+    var s = document.getElementsByTagName("script")[0];
+    s.parentNode.insertBefore(bp, s);
+  })();
+
+</script>
+<script>
+  (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+  (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+  m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+  })(window,document,'script','https://www.google-analytics.com/analytics.js','ga');
+
+  ga('create', 'UA-1481790-3', 'auto');
+  ga('send', 'pageview');
+
+</script>
+
+<meta property="og:title" content="yarn（二）：distributedShell和Unmanaged AM示例代码解析"/>
+<meta name="author" content="伊布"/>
+<meta property="og:locale" content="en_US"/>
+<meta name="description" content="一 示例执行 二 Client解析 1 创建Client对象 2 初始化 3 运行 三 Application Master解析 1 设置RM、NM消息的异步处理方法 2 向RM注册 3 计算需要的Container，向RM发起请求 4 RM分配Container给AM，AM启动任务 四 UnmanagedAM hadoop源码中，使用yarn的应用程序除了MR以外，还有2个示例程序，我们先来分析distributedShell，顺带介绍YARN应用程序设计方法。 以下代码基于2.6.0版本。 一 示例执行 我使用ambari安装的hadoop环境，jar包在/usr/lib/hadoop-yarn中。 执行命令： $ su hdfs $ hadoop jar hadoop-yarn-applications-distributedshell-2.2.0.2.0.6.0-101.jar org.apache.hadoop.yarn.applications.distributedshell.Client -jar hadoop-yarn-applications-distributedshell-2.2.0.2.0.6.0-101.jar -shell_command &#39;/bin/date&#39; -num_containers 10 需要切到hdfs用户，否则会有下面的错误提示： 15/05/05 09:17:42 INFO distributedshell.Client: Copy App Master jar from local filesystem and add to local environment 15/05/05 09:17:43 FATAL distributedshell.Client: Error running CLient org.apache.hadoop.security.AccessControlException: Permission denied: user=root, access=WRITE, inode=&quot;/user&quot;:hdfs:hdfs:drwxr-xr-x 原因是本地hdfs上的/user目录只对hdfs用户开放了写权限，root不可写。cloudera安装的时候可以选择所有服务使用同一个账户，不会存在权限的问题（但据说会造成安装变复杂）。 执行完后提示信息请见文章最后。 二 Client解析 distShell主要有2个类组成，Client和ApplicationMaster。两个类都带有main入口。Client的主要工作是启动AM，真正要做的任务由AM来调度。 Client的简化框架如下。 public static void main(String[] args) { boolean result = false; try { Client client = new Client(); //1 创建Client对象 try { boolean doRun = client.init(args); //2 初始化 if (!doRun) { System.exit(0); } } result = client.run(); //3 运行 } if (result) { System.exit(0); } System.exit(2); } 1 创建Client对象 创建时会指定本Client要用到的AM。 创建yarnClient。yarn将client与RM的交互抽象出了编程库YarnClient，用以应用程序提交、状态查询和控制等，简化应用程序。 public Client(Configuration conf) throws Exception { this( //指定AM &quot;org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster&quot;, conf); Client(String appMasterMainClass, Configuration conf) { this.conf = conf; this.appMasterMainClass = appMasterMainClass; yarnClient = YarnClient.createYarnClient(); //创建yarnClient yarnClient.init(conf); opts = new Options(); //创建opts，后面解析参数的时候用 opts.addOption(&quot;appname&quot;, true, &quot;Application Name. Default value - DistributedShell&quot;); opts.addOption(&quot;priority&quot;, true, &quot;Application Priority. Default 0&quot;); } 2 初始化 init会解析命令行传入的参数，例如使用的jar包、内存大小、cpu个数等。 代码里使用GnuParser解析：init时定义所有的参数opts（可以认为是一个模板），然后将opts和实际的args传入解析后得到一个CommnadLine对象，后面查询选项直接操作该CommnadLine对象即可，如cliParser.hasOption(&quot;help&quot;)和cliParser.getOptionValue(&quot;jar&quot;)。 public boolean init(String[] args) throws ParseException { CommandLine cliParser = new GnuParser().parse(opts, args); amMemory = Integer.parseInt(cliParser.getOptionValue(&quot;master_memory&quot;, &quot;10&quot;)); amVCores = Integer.parseInt(cliParser.getOptionValue(&quot;master_vcores&quot;, &quot;1&quot;)); shellCommand = cliParser.getOptionValue(&quot;shell_command&quot;); appMasterJar = cliParser.getOptionValue(&quot;jar&quot;); ... 3 运行 先启动yarnClient，会建立跟RM的RPC连接，之后就跟调用本地方法一样。通过此yarnClient查询NM个数、NM详细信息（ID/地址/Container个数等）、Queue info（其实没用到，示例里只是打印了下调试用）。 public class Client { public boolean run() throws IOException, YarnException { yarnClient.start(); YarnClusterMetrics clusterMetrics = yarnClient.getYarnClusterMetrics(); List&lt;NodeReport&gt; clusterNodeReports = yarnClient.getNodeReports( 收集提交AM所需的信息。 YarnClientApplication app = yarnClient.createApplication(); //创建app GetNewApplicationResponse appResponse = app.getNewApplicationResponse(); ... ApplicationSubmissionContext appContext = app.getApplicationSubmissionContext(); //AM需要的本地资源，如jar包、log文件 Map&lt;String, LocalResource&gt; localResources = new HashMap&lt;String, LocalResource&gt;(); FileSystem fs = FileSystem.get(conf); addToLocalResources(fs, appMasterJar, appMasterJarPath, appId.toString(), localResources, null); ... //添加localResource vargs.add(Environment.JAVA_HOME.$$() + &quot;/bin/java&quot;); vargs.add(&quot;-Xmx&quot; + amMemory + &quot;m&quot;); vargs.add(appMasterMainClass); ... for (CharSequence str : vargs) { command.append(str).append(&quot; &quot;); //重新组织命令行 } //创建Container加载上下文，包含本地资源，环境变量，实际命令。 ContainerLaunchContext amContainer = ContainerLaunchContext.newInstance( localResources, env, commands, null, null, null); Resource capability = Resource.newInstance(amMemory, amVCores); appContext.setResource(capability); //请求使用的内存、cpu appContext.setAMContainerSpec(amContainer); appContext.setQueue(amQueue); 重新组织出来的commands如下： $JAVA_HOME/bin/java -Xmx10m org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster --container_memory 10 提交AM（即appContext），并启动监控。 Client只关心自己提交到RM的AM是否正常运行，而AM内部的多个task，由AM管理。如果Client要查询应用程序的任务信息，需要自己设计与AM的交互。 yarnClient.submitApplication(appContext); //客户端提交AM到RM return monitorApplication(appId); 总的来说，Client做的事情比较简单，即建立与RM的连接，提交AM，监控AM运行状态。 有个疑问，走读代码没有看到jar包是怎么送到NM上去的。 三 Application Master解析 AM简化框架如下： boolean doRun = appMaster.init(args); if (!doRun) { System.exit(0); } appMaster.run(); result = appMaster.finish(); yarn抽象了两个编程库，AMRMClient和NMClient(AM和RM都可以用)，简化AM编程。 1 设置RM、NM消息的异步处理方法 AMRMClientAsync.CallbackHandler allocListener = new RMCallbackHandler(); amRMClient = AMRMClientAsync.createAMRMClientAsync(1000, allocListener); amRMClient.init(conf); amRMClient.start(); containerListener = createNMCallbackHandler(); nmClientAsync = new NMClientAsyncImpl(containerListener); nmClientAsync.init(conf); nmClientAsync.start(); 2 向RM注册 RegisterApplicationMasterResponse response = amRMClient.registerApplicationMaster(appMasterHostname, appMasterRpcPort, appMasterTrackingUrl); 3 计算需要的Container，向RM发起请求 // Setup ask for containers from RM // Send request for containers to RM // Until we get our fully allocated quota, we keep on polling RM for // containers // Keep looping until all the containers are launched and shell script // executed on them ( regardless of success/failure). for (int i = 0; i &lt; numTotalContainersToRequest; ++i) { ContainerRequest containerAsk = setupContainerAskForRM(); amRMClient.addContainerRequest(containerAsk); //请求指定个数的Container } private ContainerRequest setupContainerAskForRM() { Resource capability = Resource.newInstance(containerMemory, containerVirtualCores); //指定需要的memory/cpu能力 ContainerRequest request = new ContainerRequest(capability, null, null, pri); 好吧，先假设上面的addContainerRequest会向RM发送请求。对于AM来说，接下来就是等待RM回消息告知分配的Container。 Q：注释里说这里会一直循环，怎么理解？按说发起Container请求以后，异步等待RM的应答，在相应的处理中加载任务（前面已经注册了AMRM的回调方法）就行了。 4 RM分配Container给AM，AM启动任务 RMCallbackHandler RM消息的响应，由RMCallbackHandler处理。示例中主要对前两种消息进行了处理。 private class RMCallbackHandler implements AMRMClientAsync.CallbackHandler { //处理消息：Container执行完毕。在RM返回的心跳应答中携带。如果心跳应答中有已完成和新分配两种Container，先处理已完成 public void onContainersCompleted(List&lt;ContainerStatus&gt; completedContainers) { ... //处理消息：RM新分配Container。在RM返回的心跳应答中携带 public void onContainersAllocated(List&lt;Container&gt; allocatedContainers) { public void onShutdownRequest() {done = true;} //节点状态变化 public void onNodesUpdated(List&lt;NodeReport&gt; updatedNodes) {} public float getProgress() { onContainersAllocated收到分配的Container之后，会提交任务到NM。 public void onContainersAllocated(List&lt;Container&gt; allocatedContainers) { LaunchContainerRunnable runnableLaunchContainer = //创建runnable容器 new LaunchContainerRunnable(allocatedContainer, containerListener); Thread launchThread = new Thread(runnableLaunchContainer); //新建线程 // launch and start the container on a separate thread to keep // the main thread unblocked // as all containers may not be allocated at one go. launchThreads.add(launchThread); launchThread.start(); //线程中提交Container到NM，不影响主流程 简单分析下LaunchContainerRunnable。该类实现自Runnable，其run方法准备任务命令（本例即为date）。 private class LaunchContainerRunnable implements Runnable { public LaunchContainerRunnable( Container lcontainer, NMCallbackHandler containerListener) { this.container = lcontainer; //创建时记录待使用的Container this.containerListener = containerListener; } public void run() { vargs.add(shellCommand); //待执行的shell命令 vargs.add(shellArgs); //shell命令参数 List&lt;String&gt; commands = new ArrayList&lt;String&gt;(); commands.add(command.toString()); //转为commands //根据命令、环境变量、本地资源等创建Container加载上下文 ContainerLaunchContext ctx = ContainerLaunchContext.newInstance( localResources, shellEnv, commands, null, allTokens.duplicate(), null); containerListener.addContainer(container.getId(), container); //异步启动Container nmClientAsync.startContainerAsync(container, ctx); onContainersCompleted的功能比较简单，收到Container执行完毕的消息，检查其执行结果，如果执行失败，则重新发起请求，直到全部完成。 NMCallbackHandler NM消息的响应，由NMCallbackHandler处理。 在distShell示例里，回调句柄对NM通知过来的各种事件的处理比较简单，只是修改AM维护的Container执行完成、失败的个数。这样等到有Container执行完毕后，可以重启发起请求。失败处理和上面Container执行完毕消息的处理类似，达到了上面问题里所说的loopback效果。 static class NMCallbackHandler implements NMClientAsync.CallbackHandler { @Override public void onContainerStopped(ContainerId containerId) { @Override public void onContainerStatusReceived(ContainerId containerId, @Override public void onContainerStarted(ContainerId containerId, ... 总的来说，AM做的事就是向RM/NM注册回调函数，然后请求Container；得到Container后提交任务，并跟踪这些任务的执行情况，如果失败了则重新提交，直到全部任务完成。 四 UnmanagedAM distShell的Client提交AM到RM后，由RM将AM分配到某一个NM上的Container，这样给AM调试带来了困难。yarn提供了一个参数，Client可以设置为Unmanaged，提交AM后，会在客户端本地起一个单独的进程来运行AM。 public class UnmanagedAMLauncher { public void launchAM(ApplicationAttemptId attemptId) //创建新进程 Process amProc = Runtime.getRuntime().exec(amCmd, envAMList.toArray(envAM)); try { int exitCode = amProc.waitFor(); //等待AM进程结束 } finally { amCompleted = true; } public boolean run() throws IOException, YarnException { appContext.setUnmanagedAM(true); //设置为Unmanaged rmClient.submitApplication(appContext); //提交AM ApplicationReport appReport = //监控AM状态，如果状态变为ACCEPTED，则跳出循环，launchAM。 monitorApplication(appId, EnumSet.of(YarnApplicationState.ACCEPTED, YarnApplicationState.KILLED, YarnApplicationState.FAILED, YarnApplicationState.FINISHED)); if (appReport.getYarnApplicationState() == YarnApplicationState.ACCEPTED) { launchAM(attemptId); 附：命令执行输出 15/05/05 09:12:22 INFO distributedshell.Client: Initializing Client 15/05/05 09:12:22 INFO distributedshell.Client: Running Client 15/05/05 09:12:23 INFO client.RMProxy: Connecting to ResourceManager at ty11.dtdream.com/10.168.250.59:8050 15/05/05 09:12:23 INFO distributedshell.Client: Got Cluster metric info from ASM, numNodeManagers=3 15/05/05 09:12:23 INFO distributedshell.Client: Got Cluster node info from ASM 15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM for, nodeId=ty11.dtdream.com:45454, nodeAddressty11.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0 15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM for, nodeId=ty10.dtdream.com:45454, nodeAddressty10.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0 15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM for, nodeId=ty12.dtdream.com:45454, nodeAddressty12.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0 15/05/05 09:12:23 INFO distributedshell.Client: Queue info, queueName=default, queueCurrentCapacity=0.0, queueMaxCapacity=1.0, queueApplicationCount=0, queueChildQueueCount=0 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=root, userAcl=SUBMIT_APPLICATIONS 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=root, userAcl=ADMINISTER_QUEUE 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=default, userAcl=SUBMIT_APPLICATIONS 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=default, userAcl=ADMINISTER_QUEUE 15/05/05 09:12:23 INFO distributedshell.Client: Max mem capabililty of resources in this cluster 4096 15/05/05 09:12:23 INFO distributedshell.Client: Copy App Master jar from local filesystem and add to local environment 15/05/05 09:12:23 INFO distributedshell.Client: Set the environment for the application master 15/05/05 09:12:23 INFO distributedshell.Client: Setting up app master command 15/05/05 09:12:23 INFO distributedshell.Client: Completed setting up app master command $JAVA_HOME/bin/java -Xmx10m org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster --container_memory 10 --num_containers 10 --priority 0 --shell_command /bin/date 1&gt;&lt;LOG_DIR&gt;/AppMaster.stdout 2&gt;&lt;LOG_DIR&gt;/AppMaster.stderr 15/05/05 09:12:23 INFO distributedshell.Client: Submitting application to ASM 15/05/05 09:12:23 INFO impl.YarnClientImpl: Submitted application application_1430207548681_0011 to ResourceManager at ty11.dtdream.com/10.168.250.59:8050 15/05/05 09:12:24 INFO distributedshell.Client: Got application report from ASM for, appId=11, clientToAMToken=null, appDiagnostics=, appMasterHost=N/A, appQueue=default, appMasterRpcPort=-1, appStartTime=1430788343925, yarnAppState=ACCEPTED, distributedFinalState=UNDEFINED, appTrackingUrl=http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, appUser=hdfs 15/05/05 09:12:25 INFO distributedshell.Client: Got application report from ASM for, appId=11, clientToAMToken=null, appDiagnostics=, appMasterHost=ty10.dtdream.com/10.252.142.223, appQueue=default, appMasterRpcPort=-1, appStartTime=1430788343925, yarnAppState=RUNNING, distributedFinalState=UNDEFINED, appTrackingUrl=http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, appUser=hdfs ... 15/05/05 09:12:32 INFO distributedshell.Client: Got application report from ASM for, appId=11, clientToAMToken=null, appDiagnostics=, appMasterHost=ty10.dtdream.com/10.252.142.223, appQueue=default, appMasterRpcPort=-1, appStartTime=1430788343925, yarnAppState=FINISHED, distributedFinalState=SUCCEEDED, appTrackingUrl=http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, appUser=hdfs 15/05/05 09:12:32 INFO distributedshell.Client: Application has completed successfully. Breaking monitoring loop 15/05/05 09:12:32 INFO distributedshell.Client: Application completed successfully"/>
+<meta property="og:description" content="一 示例执行 二 Client解析 1 创建Client对象 2 初始化 3 运行 三 Application Master解析 1 设置RM、NM消息的异步处理方法 2 向RM注册 3 计算需要的Container，向RM发起请求 4 RM分配Container给AM，AM启动任务 四 UnmanagedAM hadoop源码中，使用yarn的应用程序除了MR以外，还有2个示例程序，我们先来分析distributedShell，顺带介绍YARN应用程序设计方法。 以下代码基于2.6.0版本。 一 示例执行 我使用ambari安装的hadoop环境，jar包在/usr/lib/hadoop-yarn中。 执行命令： $ su hdfs $ hadoop jar hadoop-yarn-applications-distributedshell-2.2.0.2.0.6.0-101.jar org.apache.hadoop.yarn.applications.distributedshell.Client -jar hadoop-yarn-applications-distributedshell-2.2.0.2.0.6.0-101.jar -shell_command &#39;/bin/date&#39; -num_containers 10 需要切到hdfs用户，否则会有下面的错误提示： 15/05/05 09:17:42 INFO distributedshell.Client: Copy App Master jar from local filesystem and add to local environment 15/05/05 09:17:43 FATAL distributedshell.Client: Error running CLient org.apache.hadoop.security.AccessControlException: Permission denied: user=root, access=WRITE, inode=&quot;/user&quot;:hdfs:hdfs:drwxr-xr-x 原因是本地hdfs上的/user目录只对hdfs用户开放了写权限，root不可写。cloudera安装的时候可以选择所有服务使用同一个账户，不会存在权限的问题（但据说会造成安装变复杂）。 执行完后提示信息请见文章最后。 二 Client解析 distShell主要有2个类组成，Client和ApplicationMaster。两个类都带有main入口。Client的主要工作是启动AM，真正要做的任务由AM来调度。 Client的简化框架如下。 public static void main(String[] args) { boolean result = false; try { Client client = new Client(); //1 创建Client对象 try { boolean doRun = client.init(args); //2 初始化 if (!doRun) { System.exit(0); } } result = client.run(); //3 运行 } if (result) { System.exit(0); } System.exit(2); } 1 创建Client对象 创建时会指定本Client要用到的AM。 创建yarnClient。yarn将client与RM的交互抽象出了编程库YarnClient，用以应用程序提交、状态查询和控制等，简化应用程序。 public Client(Configuration conf) throws Exception { this( //指定AM &quot;org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster&quot;, conf); Client(String appMasterMainClass, Configuration conf) { this.conf = conf; this.appMasterMainClass = appMasterMainClass; yarnClient = YarnClient.createYarnClient(); //创建yarnClient yarnClient.init(conf); opts = new Options(); //创建opts，后面解析参数的时候用 opts.addOption(&quot;appname&quot;, true, &quot;Application Name. Default value - DistributedShell&quot;); opts.addOption(&quot;priority&quot;, true, &quot;Application Priority. Default 0&quot;); } 2 初始化 init会解析命令行传入的参数，例如使用的jar包、内存大小、cpu个数等。 代码里使用GnuParser解析：init时定义所有的参数opts（可以认为是一个模板），然后将opts和实际的args传入解析后得到一个CommnadLine对象，后面查询选项直接操作该CommnadLine对象即可，如cliParser.hasOption(&quot;help&quot;)和cliParser.getOptionValue(&quot;jar&quot;)。 public boolean init(String[] args) throws ParseException { CommandLine cliParser = new GnuParser().parse(opts, args); amMemory = Integer.parseInt(cliParser.getOptionValue(&quot;master_memory&quot;, &quot;10&quot;)); amVCores = Integer.parseInt(cliParser.getOptionValue(&quot;master_vcores&quot;, &quot;1&quot;)); shellCommand = cliParser.getOptionValue(&quot;shell_command&quot;); appMasterJar = cliParser.getOptionValue(&quot;jar&quot;); ... 3 运行 先启动yarnClient，会建立跟RM的RPC连接，之后就跟调用本地方法一样。通过此yarnClient查询NM个数、NM详细信息（ID/地址/Container个数等）、Queue info（其实没用到，示例里只是打印了下调试用）。 public class Client { public boolean run() throws IOException, YarnException { yarnClient.start(); YarnClusterMetrics clusterMetrics = yarnClient.getYarnClusterMetrics(); List&lt;NodeReport&gt; clusterNodeReports = yarnClient.getNodeReports( 收集提交AM所需的信息。 YarnClientApplication app = yarnClient.createApplication(); //创建app GetNewApplicationResponse appResponse = app.getNewApplicationResponse(); ... ApplicationSubmissionContext appContext = app.getApplicationSubmissionContext(); //AM需要的本地资源，如jar包、log文件 Map&lt;String, LocalResource&gt; localResources = new HashMap&lt;String, LocalResource&gt;(); FileSystem fs = FileSystem.get(conf); addToLocalResources(fs, appMasterJar, appMasterJarPath, appId.toString(), localResources, null); ... //添加localResource vargs.add(Environment.JAVA_HOME.$$() + &quot;/bin/java&quot;); vargs.add(&quot;-Xmx&quot; + amMemory + &quot;m&quot;); vargs.add(appMasterMainClass); ... for (CharSequence str : vargs) { command.append(str).append(&quot; &quot;); //重新组织命令行 } //创建Container加载上下文，包含本地资源，环境变量，实际命令。 ContainerLaunchContext amContainer = ContainerLaunchContext.newInstance( localResources, env, commands, null, null, null); Resource capability = Resource.newInstance(amMemory, amVCores); appContext.setResource(capability); //请求使用的内存、cpu appContext.setAMContainerSpec(amContainer); appContext.setQueue(amQueue); 重新组织出来的commands如下： $JAVA_HOME/bin/java -Xmx10m org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster --container_memory 10 提交AM（即appContext），并启动监控。 Client只关心自己提交到RM的AM是否正常运行，而AM内部的多个task，由AM管理。如果Client要查询应用程序的任务信息，需要自己设计与AM的交互。 yarnClient.submitApplication(appContext); //客户端提交AM到RM return monitorApplication(appId); 总的来说，Client做的事情比较简单，即建立与RM的连接，提交AM，监控AM运行状态。 有个疑问，走读代码没有看到jar包是怎么送到NM上去的。 三 Application Master解析 AM简化框架如下： boolean doRun = appMaster.init(args); if (!doRun) { System.exit(0); } appMaster.run(); result = appMaster.finish(); yarn抽象了两个编程库，AMRMClient和NMClient(AM和RM都可以用)，简化AM编程。 1 设置RM、NM消息的异步处理方法 AMRMClientAsync.CallbackHandler allocListener = new RMCallbackHandler(); amRMClient = AMRMClientAsync.createAMRMClientAsync(1000, allocListener); amRMClient.init(conf); amRMClient.start(); containerListener = createNMCallbackHandler(); nmClientAsync = new NMClientAsyncImpl(containerListener); nmClientAsync.init(conf); nmClientAsync.start(); 2 向RM注册 RegisterApplicationMasterResponse response = amRMClient.registerApplicationMaster(appMasterHostname, appMasterRpcPort, appMasterTrackingUrl); 3 计算需要的Container，向RM发起请求 // Setup ask for containers from RM // Send request for containers to RM // Until we get our fully allocated quota, we keep on polling RM for // containers // Keep looping until all the containers are launched and shell script // executed on them ( regardless of success/failure). for (int i = 0; i &lt; numTotalContainersToRequest; ++i) { ContainerRequest containerAsk = setupContainerAskForRM(); amRMClient.addContainerRequest(containerAsk); //请求指定个数的Container } private ContainerRequest setupContainerAskForRM() { Resource capability = Resource.newInstance(containerMemory, containerVirtualCores); //指定需要的memory/cpu能力 ContainerRequest request = new ContainerRequest(capability, null, null, pri); 好吧，先假设上面的addContainerRequest会向RM发送请求。对于AM来说，接下来就是等待RM回消息告知分配的Container。 Q：注释里说这里会一直循环，怎么理解？按说发起Container请求以后，异步等待RM的应答，在相应的处理中加载任务（前面已经注册了AMRM的回调方法）就行了。 4 RM分配Container给AM，AM启动任务 RMCallbackHandler RM消息的响应，由RMCallbackHandler处理。示例中主要对前两种消息进行了处理。 private class RMCallbackHandler implements AMRMClientAsync.CallbackHandler { //处理消息：Container执行完毕。在RM返回的心跳应答中携带。如果心跳应答中有已完成和新分配两种Container，先处理已完成 public void onContainersCompleted(List&lt;ContainerStatus&gt; completedContainers) { ... //处理消息：RM新分配Container。在RM返回的心跳应答中携带 public void onContainersAllocated(List&lt;Container&gt; allocatedContainers) { public void onShutdownRequest() {done = true;} //节点状态变化 public void onNodesUpdated(List&lt;NodeReport&gt; updatedNodes) {} public float getProgress() { onContainersAllocated收到分配的Container之后，会提交任务到NM。 public void onContainersAllocated(List&lt;Container&gt; allocatedContainers) { LaunchContainerRunnable runnableLaunchContainer = //创建runnable容器 new LaunchContainerRunnable(allocatedContainer, containerListener); Thread launchThread = new Thread(runnableLaunchContainer); //新建线程 // launch and start the container on a separate thread to keep // the main thread unblocked // as all containers may not be allocated at one go. launchThreads.add(launchThread); launchThread.start(); //线程中提交Container到NM，不影响主流程 简单分析下LaunchContainerRunnable。该类实现自Runnable，其run方法准备任务命令（本例即为date）。 private class LaunchContainerRunnable implements Runnable { public LaunchContainerRunnable( Container lcontainer, NMCallbackHandler containerListener) { this.container = lcontainer; //创建时记录待使用的Container this.containerListener = containerListener; } public void run() { vargs.add(shellCommand); //待执行的shell命令 vargs.add(shellArgs); //shell命令参数 List&lt;String&gt; commands = new ArrayList&lt;String&gt;(); commands.add(command.toString()); //转为commands //根据命令、环境变量、本地资源等创建Container加载上下文 ContainerLaunchContext ctx = ContainerLaunchContext.newInstance( localResources, shellEnv, commands, null, allTokens.duplicate(), null); containerListener.addContainer(container.getId(), container); //异步启动Container nmClientAsync.startContainerAsync(container, ctx); onContainersCompleted的功能比较简单，收到Container执行完毕的消息，检查其执行结果，如果执行失败，则重新发起请求，直到全部完成。 NMCallbackHandler NM消息的响应，由NMCallbackHandler处理。 在distShell示例里，回调句柄对NM通知过来的各种事件的处理比较简单，只是修改AM维护的Container执行完成、失败的个数。这样等到有Container执行完毕后，可以重启发起请求。失败处理和上面Container执行完毕消息的处理类似，达到了上面问题里所说的loopback效果。 static class NMCallbackHandler implements NMClientAsync.CallbackHandler { @Override public void onContainerStopped(ContainerId containerId) { @Override public void onContainerStatusReceived(ContainerId containerId, @Override public void onContainerStarted(ContainerId containerId, ... 总的来说，AM做的事就是向RM/NM注册回调函数，然后请求Container；得到Container后提交任务，并跟踪这些任务的执行情况，如果失败了则重新提交，直到全部任务完成。 四 UnmanagedAM distShell的Client提交AM到RM后，由RM将AM分配到某一个NM上的Container，这样给AM调试带来了困难。yarn提供了一个参数，Client可以设置为Unmanaged，提交AM后，会在客户端本地起一个单独的进程来运行AM。 public class UnmanagedAMLauncher { public void launchAM(ApplicationAttemptId attemptId) //创建新进程 Process amProc = Runtime.getRuntime().exec(amCmd, envAMList.toArray(envAM)); try { int exitCode = amProc.waitFor(); //等待AM进程结束 } finally { amCompleted = true; } public boolean run() throws IOException, YarnException { appContext.setUnmanagedAM(true); //设置为Unmanaged rmClient.submitApplication(appContext); //提交AM ApplicationReport appReport = //监控AM状态，如果状态变为ACCEPTED，则跳出循环，launchAM。 monitorApplication(appId, EnumSet.of(YarnApplicationState.ACCEPTED, YarnApplicationState.KILLED, YarnApplicationState.FAILED, YarnApplicationState.FINISHED)); if (appReport.getYarnApplicationState() == YarnApplicationState.ACCEPTED) { launchAM(attemptId); 附：命令执行输出 15/05/05 09:12:22 INFO distributedshell.Client: Initializing Client 15/05/05 09:12:22 INFO distributedshell.Client: Running Client 15/05/05 09:12:23 INFO client.RMProxy: Connecting to ResourceManager at ty11.dtdream.com/10.168.250.59:8050 15/05/05 09:12:23 INFO distributedshell.Client: Got Cluster metric info from ASM, numNodeManagers=3 15/05/05 09:12:23 INFO distributedshell.Client: Got Cluster node info from ASM 15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM for, nodeId=ty11.dtdream.com:45454, nodeAddressty11.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0 15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM for, nodeId=ty10.dtdream.com:45454, nodeAddressty10.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0 15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM for, nodeId=ty12.dtdream.com:45454, nodeAddressty12.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0 15/05/05 09:12:23 INFO distributedshell.Client: Queue info, queueName=default, queueCurrentCapacity=0.0, queueMaxCapacity=1.0, queueApplicationCount=0, queueChildQueueCount=0 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=root, userAcl=SUBMIT_APPLICATIONS 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=root, userAcl=ADMINISTER_QUEUE 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=default, userAcl=SUBMIT_APPLICATIONS 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=default, userAcl=ADMINISTER_QUEUE 15/05/05 09:12:23 INFO distributedshell.Client: Max mem capabililty of resources in this cluster 4096 15/05/05 09:12:23 INFO distributedshell.Client: Copy App Master jar from local filesystem and add to local environment 15/05/05 09:12:23 INFO distributedshell.Client: Set the environment for the application master 15/05/05 09:12:23 INFO distributedshell.Client: Setting up app master command 15/05/05 09:12:23 INFO distributedshell.Client: Completed setting up app master command $JAVA_HOME/bin/java -Xmx10m org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster --container_memory 10 --num_containers 10 --priority 0 --shell_command /bin/date 1&gt;&lt;LOG_DIR&gt;/AppMaster.stdout 2&gt;&lt;LOG_DIR&gt;/AppMaster.stderr 15/05/05 09:12:23 INFO distributedshell.Client: Submitting application to ASM 15/05/05 09:12:23 INFO impl.YarnClientImpl: Submitted application application_1430207548681_0011 to ResourceManager at ty11.dtdream.com/10.168.250.59:8050 15/05/05 09:12:24 INFO distributedshell.Client: Got application report from ASM for, appId=11, clientToAMToken=null, appDiagnostics=, appMasterHost=N/A, appQueue=default, appMasterRpcPort=-1, appStartTime=1430788343925, yarnAppState=ACCEPTED, distributedFinalState=UNDEFINED, appTrackingUrl=http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, appUser=hdfs 15/05/05 09:12:25 INFO distributedshell.Client: Got application report from ASM for, appId=11, clientToAMToken=null, appDiagnostics=, appMasterHost=ty10.dtdream.com/10.252.142.223, appQueue=default, appMasterRpcPort=-1, appStartTime=1430788343925, yarnAppState=RUNNING, distributedFinalState=UNDEFINED, appTrackingUrl=http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, appUser=hdfs ... 15/05/05 09:12:32 INFO distributedshell.Client: Got application report from ASM for, appId=11, clientToAMToken=null, appDiagnostics=, appMasterHost=ty10.dtdream.com/10.252.142.223, appQueue=default, appMasterRpcPort=-1, appStartTime=1430788343925, yarnAppState=FINISHED, distributedFinalState=SUCCEEDED, appTrackingUrl=http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, appUser=hdfs 15/05/05 09:12:32 INFO distributedshell.Client: Application has completed successfully. Breaking monitoring loop 15/05/05 09:12:32 INFO distributedshell.Client: Application completed successfully"/>
+<link rel="canonical" href="http://ieevee.com/tech/2015/05/05/yarn-dist-shell.html"/>
+<meta property="og:url" content="http://ieevee.com/tech/2015/05/05/yarn-dist-shell.html"/>
+<meta property="og:site_name" content="Zlatan Eevee"/>
+<meta property="og:type" content="article"/>
+<meta property="article:published_time" content="2015-05-05T16:56:22+00:00"/>
+<script type="application/ld+json">
+{"@context":"http://schema.org","@type":"BlogPosting","headline":"yarn（二）：distributedShell和Unmanaged AM示例代码解析","author":{"@type":"Person","name":"伊布"},"datePublished":"2015-05-05T16:56:22+00:00","dateModified":"2015-05-05T16:56:22+00:00","description":"一 示例执行 二 Client解析 1 创建Client对象 2 初始化 3 运行 三 Application Master解析 1 设置RM、NM消息的异步处理方法 2 向RM注册 3 计算需要的Container，向RM发起请求 4 RM分配Container给AM，AM启动任务 四 UnmanagedAM hadoop源码中，使用yarn的应用程序除了MR以外，还有2个示例程序，我们先来分析distributedShell，顺带介绍YARN应用程序设计方法。 以下代码基于2.6.0版本。 一 示例执行 我使用ambari安装的hadoop环境，jar包在/usr/lib/hadoop-yarn中。 执行命令： $ su hdfs $ hadoop jar hadoop-yarn-applications-distributedshell-2.2.0.2.0.6.0-101.jar org.apache.hadoop.yarn.applications.distributedshell.Client -jar hadoop-yarn-applications-distributedshell-2.2.0.2.0.6.0-101.jar -shell_command &#39;/bin/date&#39; -num_containers 10 需要切到hdfs用户，否则会有下面的错误提示： 15/05/05 09:17:42 INFO distributedshell.Client: Copy App Master jar from local filesystem and add to local environment 15/05/05 09:17:43 FATAL distributedshell.Client: Error running CLient org.apache.hadoop.security.AccessControlException: Permission denied: user=root, access=WRITE, inode=&quot;/user&quot;:hdfs:hdfs:drwxr-xr-x 原因是本地hdfs上的/user目录只对hdfs用户开放了写权限，root不可写。cloudera安装的时候可以选择所有服务使用同一个账户，不会存在权限的问题（但据说会造成安装变复杂）。 执行完后提示信息请见文章最后。 二 Client解析 distShell主要有2个类组成，Client和ApplicationMaster。两个类都带有main入口。Client的主要工作是启动AM，真正要做的任务由AM来调度。 Client的简化框架如下。 public static void main(String[] args) { boolean result = false; try { Client client = new Client(); //1 创建Client对象 try { boolean doRun = client.init(args); //2 初始化 if (!doRun) { System.exit(0); } } result = client.run(); //3 运行 } if (result) { System.exit(0); } System.exit(2); } 1 创建Client对象 创建时会指定本Client要用到的AM。 创建yarnClient。yarn将client与RM的交互抽象出了编程库YarnClient，用以应用程序提交、状态查询和控制等，简化应用程序。 public Client(Configuration conf) throws Exception { this( //指定AM &quot;org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster&quot;, conf); Client(String appMasterMainClass, Configuration conf) { this.conf = conf; this.appMasterMainClass = appMasterMainClass; yarnClient = YarnClient.createYarnClient(); //创建yarnClient yarnClient.init(conf); opts = new Options(); //创建opts，后面解析参数的时候用 opts.addOption(&quot;appname&quot;, true, &quot;Application Name. Default value - DistributedShell&quot;); opts.addOption(&quot;priority&quot;, true, &quot;Application Priority. Default 0&quot;); } 2 初始化 init会解析命令行传入的参数，例如使用的jar包、内存大小、cpu个数等。 代码里使用GnuParser解析：init时定义所有的参数opts（可以认为是一个模板），然后将opts和实际的args传入解析后得到一个CommnadLine对象，后面查询选项直接操作该CommnadLine对象即可，如cliParser.hasOption(&quot;help&quot;)和cliParser.getOptionValue(&quot;jar&quot;)。 public boolean init(String[] args) throws ParseException { CommandLine cliParser = new GnuParser().parse(opts, args); amMemory = Integer.parseInt(cliParser.getOptionValue(&quot;master_memory&quot;, &quot;10&quot;)); amVCores = Integer.parseInt(cliParser.getOptionValue(&quot;master_vcores&quot;, &quot;1&quot;)); shellCommand = cliParser.getOptionValue(&quot;shell_command&quot;); appMasterJar = cliParser.getOptionValue(&quot;jar&quot;); ... 3 运行 先启动yarnClient，会建立跟RM的RPC连接，之后就跟调用本地方法一样。通过此yarnClient查询NM个数、NM详细信息（ID/地址/Container个数等）、Queue info（其实没用到，示例里只是打印了下调试用）。 public class Client { public boolean run() throws IOException, YarnException { yarnClient.start(); YarnClusterMetrics clusterMetrics = yarnClient.getYarnClusterMetrics(); List&lt;NodeReport&gt; clusterNodeReports = yarnClient.getNodeReports( 收集提交AM所需的信息。 YarnClientApplication app = yarnClient.createApplication(); //创建app GetNewApplicationResponse appResponse = app.getNewApplicationResponse(); ... ApplicationSubmissionContext appContext = app.getApplicationSubmissionContext(); //AM需要的本地资源，如jar包、log文件 Map&lt;String, LocalResource&gt; localResources = new HashMap&lt;String, LocalResource&gt;(); FileSystem fs = FileSystem.get(conf); addToLocalResources(fs, appMasterJar, appMasterJarPath, appId.toString(), localResources, null); ... //添加localResource vargs.add(Environment.JAVA_HOME.$$() + &quot;/bin/java&quot;); vargs.add(&quot;-Xmx&quot; + amMemory + &quot;m&quot;); vargs.add(appMasterMainClass); ... for (CharSequence str : vargs) { command.append(str).append(&quot; &quot;); //重新组织命令行 } //创建Container加载上下文，包含本地资源，环境变量，实际命令。 ContainerLaunchContext amContainer = ContainerLaunchContext.newInstance( localResources, env, commands, null, null, null); Resource capability = Resource.newInstance(amMemory, amVCores); appContext.setResource(capability); //请求使用的内存、cpu appContext.setAMContainerSpec(amContainer); appContext.setQueue(amQueue); 重新组织出来的commands如下： $JAVA_HOME/bin/java -Xmx10m org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster --container_memory 10 提交AM（即appContext），并启动监控。 Client只关心自己提交到RM的AM是否正常运行，而AM内部的多个task，由AM管理。如果Client要查询应用程序的任务信息，需要自己设计与AM的交互。 yarnClient.submitApplication(appContext); //客户端提交AM到RM return monitorApplication(appId); 总的来说，Client做的事情比较简单，即建立与RM的连接，提交AM，监控AM运行状态。 有个疑问，走读代码没有看到jar包是怎么送到NM上去的。 三 Application Master解析 AM简化框架如下： boolean doRun = appMaster.init(args); if (!doRun) { System.exit(0); } appMaster.run(); result = appMaster.finish(); yarn抽象了两个编程库，AMRMClient和NMClient(AM和RM都可以用)，简化AM编程。 1 设置RM、NM消息的异步处理方法 AMRMClientAsync.CallbackHandler allocListener = new RMCallbackHandler(); amRMClient = AMRMClientAsync.createAMRMClientAsync(1000, allocListener); amRMClient.init(conf); amRMClient.start(); containerListener = createNMCallbackHandler(); nmClientAsync = new NMClientAsyncImpl(containerListener); nmClientAsync.init(conf); nmClientAsync.start(); 2 向RM注册 RegisterApplicationMasterResponse response = amRMClient.registerApplicationMaster(appMasterHostname, appMasterRpcPort, appMasterTrackingUrl); 3 计算需要的Container，向RM发起请求 // Setup ask for containers from RM // Send request for containers to RM // Until we get our fully allocated quota, we keep on polling RM for // containers // Keep looping until all the containers are launched and shell script // executed on them ( regardless of success/failure). for (int i = 0; i &lt; numTotalContainersToRequest; ++i) { ContainerRequest containerAsk = setupContainerAskForRM(); amRMClient.addContainerRequest(containerAsk); //请求指定个数的Container } private ContainerRequest setupContainerAskForRM() { Resource capability = Resource.newInstance(containerMemory, containerVirtualCores); //指定需要的memory/cpu能力 ContainerRequest request = new ContainerRequest(capability, null, null, pri); 好吧，先假设上面的addContainerRequest会向RM发送请求。对于AM来说，接下来就是等待RM回消息告知分配的Container。 Q：注释里说这里会一直循环，怎么理解？按说发起Container请求以后，异步等待RM的应答，在相应的处理中加载任务（前面已经注册了AMRM的回调方法）就行了。 4 RM分配Container给AM，AM启动任务 RMCallbackHandler RM消息的响应，由RMCallbackHandler处理。示例中主要对前两种消息进行了处理。 private class RMCallbackHandler implements AMRMClientAsync.CallbackHandler { //处理消息：Container执行完毕。在RM返回的心跳应答中携带。如果心跳应答中有已完成和新分配两种Container，先处理已完成 public void onContainersCompleted(List&lt;ContainerStatus&gt; completedContainers) { ... //处理消息：RM新分配Container。在RM返回的心跳应答中携带 public void onContainersAllocated(List&lt;Container&gt; allocatedContainers) { public void onShutdownRequest() {done = true;} //节点状态变化 public void onNodesUpdated(List&lt;NodeReport&gt; updatedNodes) {} public float getProgress() { onContainersAllocated收到分配的Container之后，会提交任务到NM。 public void onContainersAllocated(List&lt;Container&gt; allocatedContainers) { LaunchContainerRunnable runnableLaunchContainer = //创建runnable容器 new LaunchContainerRunnable(allocatedContainer, containerListener); Thread launchThread = new Thread(runnableLaunchContainer); //新建线程 // launch and start the container on a separate thread to keep // the main thread unblocked // as all containers may not be allocated at one go. launchThreads.add(launchThread); launchThread.start(); //线程中提交Container到NM，不影响主流程 简单分析下LaunchContainerRunnable。该类实现自Runnable，其run方法准备任务命令（本例即为date）。 private class LaunchContainerRunnable implements Runnable { public LaunchContainerRunnable( Container lcontainer, NMCallbackHandler containerListener) { this.container = lcontainer; //创建时记录待使用的Container this.containerListener = containerListener; } public void run() { vargs.add(shellCommand); //待执行的shell命令 vargs.add(shellArgs); //shell命令参数 List&lt;String&gt; commands = new ArrayList&lt;String&gt;(); commands.add(command.toString()); //转为commands //根据命令、环境变量、本地资源等创建Container加载上下文 ContainerLaunchContext ctx = ContainerLaunchContext.newInstance( localResources, shellEnv, commands, null, allTokens.duplicate(), null); containerListener.addContainer(container.getId(), container); //异步启动Container nmClientAsync.startContainerAsync(container, ctx); onContainersCompleted的功能比较简单，收到Container执行完毕的消息，检查其执行结果，如果执行失败，则重新发起请求，直到全部完成。 NMCallbackHandler NM消息的响应，由NMCallbackHandler处理。 在distShell示例里，回调句柄对NM通知过来的各种事件的处理比较简单，只是修改AM维护的Container执行完成、失败的个数。这样等到有Container执行完毕后，可以重启发起请求。失败处理和上面Container执行完毕消息的处理类似，达到了上面问题里所说的loopback效果。 static class NMCallbackHandler implements NMClientAsync.CallbackHandler { @Override public void onContainerStopped(ContainerId containerId) { @Override public void onContainerStatusReceived(ContainerId containerId, @Override public void onContainerStarted(ContainerId containerId, ... 总的来说，AM做的事就是向RM/NM注册回调函数，然后请求Container；得到Container后提交任务，并跟踪这些任务的执行情况，如果失败了则重新提交，直到全部任务完成。 四 UnmanagedAM distShell的Client提交AM到RM后，由RM将AM分配到某一个NM上的Container，这样给AM调试带来了困难。yarn提供了一个参数，Client可以设置为Unmanaged，提交AM后，会在客户端本地起一个单独的进程来运行AM。 public class UnmanagedAMLauncher { public void launchAM(ApplicationAttemptId attemptId) //创建新进程 Process amProc = Runtime.getRuntime().exec(amCmd, envAMList.toArray(envAM)); try { int exitCode = amProc.waitFor(); //等待AM进程结束 } finally { amCompleted = true; } public boolean run() throws IOException, YarnException { appContext.setUnmanagedAM(true); //设置为Unmanaged rmClient.submitApplication(appContext); //提交AM ApplicationReport appReport = //监控AM状态，如果状态变为ACCEPTED，则跳出循环，launchAM。 monitorApplication(appId, EnumSet.of(YarnApplicationState.ACCEPTED, YarnApplicationState.KILLED, YarnApplicationState.FAILED, YarnApplicationState.FINISHED)); if (appReport.getYarnApplicationState() == YarnApplicationState.ACCEPTED) { launchAM(attemptId); 附：命令执行输出 15/05/05 09:12:22 INFO distributedshell.Client: Initializing Client 15/05/05 09:12:22 INFO distributedshell.Client: Running Client 15/05/05 09:12:23 INFO client.RMProxy: Connecting to ResourceManager at ty11.dtdream.com/10.168.250.59:8050 15/05/05 09:12:23 INFO distributedshell.Client: Got Cluster metric info from ASM, numNodeManagers=3 15/05/05 09:12:23 INFO distributedshell.Client: Got Cluster node info from ASM 15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM for, nodeId=ty11.dtdream.com:45454, nodeAddressty11.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0 15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM for, nodeId=ty10.dtdream.com:45454, nodeAddressty10.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0 15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM for, nodeId=ty12.dtdream.com:45454, nodeAddressty12.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0 15/05/05 09:12:23 INFO distributedshell.Client: Queue info, queueName=default, queueCurrentCapacity=0.0, queueMaxCapacity=1.0, queueApplicationCount=0, queueChildQueueCount=0 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=root, userAcl=SUBMIT_APPLICATIONS 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=root, userAcl=ADMINISTER_QUEUE 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=default, userAcl=SUBMIT_APPLICATIONS 15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info for Queue, queueName=default, userAcl=ADMINISTER_QUEUE 15/05/05 09:12:23 INFO distributedshell.Client: Max mem capabililty of resources in this cluster 4096 15/05/05 09:12:23 INFO distributedshell.Client: Copy App Master jar from local filesystem and add to local environment 15/05/05 09:12:23 INFO distributedshell.Client: Set the environment for the application master 15/05/05 09:12:23 INFO distributedshell.Client: Setting up app master command 15/05/05 09:12:23 INFO distributedshell.Client: Completed setting up app master command $JAVA_HOME/bin/java -Xmx10m org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster --container_memory 10 --num_containers 10 --priority 0 --shell_command /bin/date 1&gt;&lt;LOG_DIR&gt;/AppMaster.stdout 2&gt;&lt;LOG_DIR&gt;/AppMaster.stderr 15/05/05 09:12:23 INFO distributedshell.Client: Submitting application to ASM 15/05/05 09:12:23 INFO impl.YarnClientImpl: Submitted application application_1430207548681_0011 to ResourceManager at ty11.dtdream.com/10.168.250.59:8050 15/05/05 09:12:24 INFO distributedshell.Client: Got application report from ASM for, appId=11, clientToAMToken=null, appDiagnostics=, appMasterHost=N/A, appQueue=default, appMasterRpcPort=-1, appStartTime=1430788343925, yarnAppState=ACCEPTED, distributedFinalState=UNDEFINED, appTrackingUrl=http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, appUser=hdfs 15/05/05 09:12:25 INFO distributedshell.Client: Got application report from ASM for, appId=11, clientToAMToken=null, appDiagnostics=, appMasterHost=ty10.dtdream.com/10.252.142.223, appQueue=default, appMasterRpcPort=-1, appStartTime=1430788343925, yarnAppState=RUNNING, distributedFinalState=UNDEFINED, appTrackingUrl=http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, appUser=hdfs ... 15/05/05 09:12:32 INFO distributedshell.Client: Got application report from ASM for, appId=11, clientToAMToken=null, appDiagnostics=, appMasterHost=ty10.dtdream.com/10.252.142.223, appQueue=default, appMasterRpcPort=-1, appStartTime=1430788343925, yarnAppState=FINISHED, distributedFinalState=SUCCEEDED, appTrackingUrl=http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, appUser=hdfs 15/05/05 09:12:32 INFO distributedshell.Client: Application has completed successfully. Breaking monitoring loop 15/05/05 09:12:32 INFO distributedshell.Client: Application completed successfully","publisher":{"@type":"Organization","logo":{"@type":"ImageObject","url":"http://ieevee.com/assets/logo.png"},"name":"伊布"},"mainEntityOfPage":{"@type":"WebPage","@id":"http://ieevee.com/tech/2015/05/05/yarn-dist-shell.html"},"url":"http://ieevee.com/tech/2015/05/05/yarn-dist-shell.html"}</script>
+
+<head>
+<meta charset="utf-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yarn（二）：distributedShell和Unmanaged AM示例代码解析</title>
+<meta name="description" content="  一 示例执行  二 Client解析          1 创建Client对象      2 初始化      3 运行        三 Application Master解析          1 设置RM、NM消息的异步处理方法      2 向RM注册      3 计算需要的Container，...">
+<meta name="author" content="伊布">
+<meta name="copyright" content="&copy; 伊布 2017">
+
+
+<link href="//cdn.bootcss.com/font-awesome/4.3.0/css/font-awesome.min.css" rel="stylesheet">
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/highlight.js/9.2.0/styles/github.min.css">
+
+<link rel="stylesheet" href="//cdnjs.cloudflare.com/ajax/libs/lightbox2/2.7.1/css/lightbox.css">
+
+<link rel="shortcut icon" href="/assets/icons/favicon.ico" type="image/x-icon">
+<link rel="icon" href="/assets/icons/favicon.ico" type="image/x-icon">
+<link rel="apple-touch-icon" sizes="57x57" href="/assets/icons/apple-icon-57x57.png">
+<link rel="apple-touch-icon" sizes="60x60" href="/assets/icons/apple-icon-60x60.png">
+<link rel="apple-touch-icon" sizes="72x72" href="/assets/icons/apple-icon-72x72.png">
+<link rel="apple-touch-icon" sizes="76x76" href="/assets/icons/apple-icon-76x76.png">
+<link rel="apple-touch-icon" sizes="114x114" href="/assets/icons/apple-icon-114x114.png">
+<link rel="apple-touch-icon" sizes="120x120" href="/assets/icons/apple-icon-120x120.png">
+<link rel="apple-touch-icon" sizes="144x144" href="/assets/icons/apple-icon-144x144.png">
+<link rel="apple-touch-icon" sizes="152x152" href="/assets/icons/apple-icon-152x152.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/assets/icons/apple-icon-180x180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/assets/icons/android-icon-192x192.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/icons/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="96x96" href="/assets/icons/favicon-96x96.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/assets/icons/favicon-16x16.png">
+<link rel="manifest" href="/assets/icons/manifest.json">
+<meta name="msapplication-TileColor" content="#ffffff">
+<meta name="msapplication-TileImage" content="/assets/icons/ms-icon-144x144.png">
+<meta name="theme-color" content="#ffffff">
+
+<meta property="og:description" content="  一 示例执行  二 Client解析          1 创建Client对象      2 初始化      3 运行        三 Application Master解析          1 设置RM、NM消息的异步处理方法      2 向RM注册      3 计算需要的Container，..."/>
+<meta property="og:url" content="http://ieevee.com"/>
+<meta property="og:site_name" content="Zlatan Eevee"/>
+<meta property="og:title" content="yarn（二）：distributedShell和Unmanaged AM示例代码解析"/>
+<meta property="og:type" content="website"/>
+<meta property="og:image" content="http://ieevee.com/assets/instacode.png"/>
+<meta property="og:image:type" content="image/png"/>
+<meta property="og:image:width" content="612"/>
+<meta property="og:image:height" content="605"/>
+
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="yarn（二）：distributedShell和Unmanaged AM示例代码解析">
+<meta name="twitter:description" content="  一 示例执行  二 Client解析          1 创建Client对象      2 初始化      3 运行        三 Application Master解析          1 设置RM、NM消息的异步处理方法      2 向RM注册      3 计算需要的Container，...">
+<meta name="twitter:image" content="http://ieevee.com/assets/instacode.png">
+<meta name="twitter:url" content="http://ieevee.com">
+
+<link rel="stylesheet" href="/css/main.css">
+<link rel="canonical" href="http://ieevee.com/tech/2015/05/05/yarn-dist-shell.html">
+<link rel="alternate" type="application/rss+xml" title="Zlatan Eevee" href="http://ieevee.com/feed.xml"/>
+</head>
+<body>
+<header class="navigation" role="banner">
+<div class="navigation-wrapper">
+<a href="/" class="logo">
+<img src="/assets/logo.png" alt="Zlatan Eevee">
+</a>
+<form action="/search.html" class="navbar-search pull-right">
+<input type="text" placeholder="Google" class="search-query input-medium" name="q">
+</form>
+<a href="javascript:void(0)" class="navigation-menu-button" id="js-mobile-menu">
+<i class="fa fa-bars"></i>
+</a>
+<nav role="navigation">
+<ul id="js-navigation-menu" class="navigation-menu show">
+<li class="nav-link"><a href="/about">About</a>
+<li class="nav-link"><a href="/archives">Archives</a>
+
+</ul>
+</nav>
+
+</div>
+</header>
+<div class="page-content">
+<div class="post">
+<div class="post-header-container has-cover" style="background-image: url(/assets/instacode.png);">
+<div class="scrim has-cover">
+<header class="post-header">
+<h1 class="title">yarn（二）：distributedShell和Unmanaged AM示例代码解析</h1>
+<p class="info">by <strong>伊布</strong></p>
+</header>
+</div>
+</div>
+<div class="wrapper">
+<section class="post-meta">
+<div class="post-date">May 5, 2015</div>
+<div class="post-categories">
+in
+<a href="/category/tech">Tech</a>
+</div>
+</section>
+<article class="post-content">
+<ul id="markdown-toc">
+<li><a href="#一-示例执行" id="markdown-toc-一-示例执行">一 示例执行</a></li>
+<li><a href="#二-client解析" id="markdown-toc-二-client解析">二 Client解析</a> <ul>
+<li><a href="#1-创建client对象" id="markdown-toc-1-创建client对象">1 创建Client对象</a></li>
+<li><a href="#2-初始化" id="markdown-toc-2-初始化">2 初始化</a></li>
+<li><a href="#3-运行" id="markdown-toc-3-运行">3 运行</a></li>
+</ul>
+</li>
+<li><a href="#三-application-master解析" id="markdown-toc-三-application-master解析">三 Application Master解析</a> <ul>
+<li><a href="#1-设置rmnm消息的异步处理方法" id="markdown-toc-1-设置rmnm消息的异步处理方法">1 设置RM、NM消息的异步处理方法</a></li>
+<li><a href="#2-向rm注册" id="markdown-toc-2-向rm注册">2 向RM注册</a></li>
+<li><a href="#3-计算需要的container向rm发起请求" id="markdown-toc-3-计算需要的container向rm发起请求">3 计算需要的Container，向RM发起请求</a></li>
+<li><a href="#4-rm分配container给amam启动任务" id="markdown-toc-4-rm分配container给amam启动任务">4 RM分配Container给AM，AM启动任务</a></li>
+</ul>
+</li>
+<li><a href="#四-unmanagedam" id="markdown-toc-四-unmanagedam">四 UnmanagedAM</a></li>
+</ul>
+<p>hadoop源码中，使用yarn的应用程序除了MR以外，还有2个示例程序，我们先来分析distributedShell，顺带介绍YARN应用程序设计方法。
+以下代码基于2.6.0版本。</p>
+<h3 id="一-示例执行">一 示例执行</h3>
+<p>我使用ambari安装的hadoop环境，jar包在<code class="highlighter-rouge">/usr/lib/hadoop-yarn</code>中。
+执行命令：</p>
+<div class="language-bash highlighter-rouge"><pre class="highlight"><code><span class="gp">$ </span>su hdfs
+<span class="gp">$ </span>hadoop jar hadoop-yarn-applications-distributedshell-2.2.0.2.0.6.0-101.jar org.apache.hadoop.yarn.applications.distributedshell.Client -jar hadoop-yarn-applications-distributedshell-2.2.0.2.0.6.0-101.jar  -shell_command <span class="s1">'/bin/date'</span> -num_containers 10
+</code></pre>
+</div>
+<p>需要切到hdfs用户，否则会有下面的错误提示：</p>
+<div class="language-bash highlighter-rouge"><pre class="highlight"><code>15/05/05 09:17:42 INFO distributedshell.Client: Copy App Master jar from <span class="nb">local </span>filesystem and add to <span class="nb">local </span>environment
+15/05/05 09:17:43 FATAL distributedshell.Client: Error running CLient
+org.apache.hadoop.security.AccessControlException: Permission denied: <span class="nv">user</span><span class="o">=</span>root, <span class="nv">access</span><span class="o">=</span>WRITE, <span class="nv">inode</span><span class="o">=</span><span class="s2">"/user"</span>:hdfs:hdfs:drwxr-xr-x
+</code></pre>
+</div>
+<p>原因是本地hdfs上的<code class="highlighter-rouge">/user</code>目录只对hdfs用户开放了写权限，root不可写。cloudera安装的时候可以选择<em>所有服务使用同一个账户</em>，不会存在权限的问题（但据说会造成安装变复杂）。
+执行完后提示信息请见文章最后。</p>
+<h3 id="二-client解析">二 Client解析</h3>
+<p>distShell主要有2个类组成，Client和ApplicationMaster。两个类都带有main入口。Client的主要工作是启动AM，真正要做的任务由AM来调度。
+Client的简化框架如下。</p>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>  <span class="kd">public</span> <span class="kd">static</span> <span class="kt">void</span> <span class="nf">main</span><span class="o">(</span><span class="n">String</span><span class="o">[]</span> <span class="n">args</span><span class="o">)</span> <span class="o">{</span>
+    <span class="kt">boolean</span> <span class="n">result</span> <span class="o">=</span> <span class="kc">false</span><span class="o">;</span>
+    <span class="k">try</span> <span class="o">{</span>
+      <span class="n">Client</span> <span class="n">client</span> <span class="o">=</span> <span class="k">new</span> <span class="n">Client</span><span class="o">();</span>  <span class="c1">//1 创建Client对象</span>
+      <span class="k">try</span> <span class="o">{</span>
+        <span class="kt">boolean</span> <span class="n">doRun</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="na">init</span><span class="o">(</span><span class="n">args</span><span class="o">);</span>  <span class="c1">//2 初始化</span>
+        <span class="k">if</span> <span class="o">(!</span><span class="n">doRun</span><span class="o">)</span> <span class="o">{</span>
+          <span class="n">System</span><span class="o">.</span><span class="na">exit</span><span class="o">(</span><span class="mi">0</span><span class="o">);</span>
+        <span class="o">}</span>
+      <span class="o">}</span>
+      <span class="n">result</span> <span class="o">=</span> <span class="n">client</span><span class="o">.</span><span class="na">run</span><span class="o">();</span>   <span class="c1">//3 运行</span>
+    <span class="o">}</span>
+    <span class="k">if</span> <span class="o">(</span><span class="n">result</span><span class="o">)</span> <span class="o">{</span>
+      <span class="n">System</span><span class="o">.</span><span class="na">exit</span><span class="o">(</span><span class="mi">0</span><span class="o">);</span>
+    <span class="o">}</span>
+    <span class="n">System</span><span class="o">.</span><span class="na">exit</span><span class="o">(</span><span class="mi">2</span><span class="o">);</span>
+  <span class="o">}</span>
+</code></pre>
+</div>
+<h4 id="1-创建client对象">1 创建Client对象</h4>
+<p>创建时会指定本Client要用到的AM。
+创建yarnClient。yarn将client与RM的交互抽象出了编程库YarnClient，用以应用程序提交、状态查询和控制等，简化应用程序。</p>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>  <span class="kd">public</span> <span class="nf">Client</span><span class="o">(</span><span class="n">Configuration</span> <span class="n">conf</span><span class="o">)</span> <span class="kd">throws</span> <span class="n">Exception</span>  <span class="o">{</span>
+    <span class="k">this</span><span class="o">(</span>		<span class="c1">//指定AM</span>
+      <span class="s">"org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster"</span><span class="o">,</span>
+      <span class="n">conf</span><span class="o">);</span>
+  <span class="n">Client</span><span class="o">(</span><span class="n">String</span> <span class="n">appMasterMainClass</span><span class="o">,</span> <span class="n">Configuration</span> <span class="n">conf</span><span class="o">)</span> <span class="o">{</span>
+    <span class="k">this</span><span class="o">.</span><span class="na">conf</span> <span class="o">=</span> <span class="n">conf</span><span class="o">;</span>
+    <span class="k">this</span><span class="o">.</span><span class="na">appMasterMainClass</span> <span class="o">=</span> <span class="n">appMasterMainClass</span><span class="o">;</span>
+    <span class="n">yarnClient</span> <span class="o">=</span> <span class="n">YarnClient</span><span class="o">.</span><span class="na">createYarnClient</span><span class="o">();</span>		<span class="c1">//创建yarnClient</span>
+    <span class="n">yarnClient</span><span class="o">.</span><span class="na">init</span><span class="o">(</span><span class="n">conf</span><span class="o">);</span>
+    <span class="n">opts</span> <span class="o">=</span> <span class="k">new</span> <span class="n">Options</span><span class="o">();</span>	<span class="c1">//创建opts，后面解析参数的时候用</span>
+    <span class="n">opts</span><span class="o">.</span><span class="na">addOption</span><span class="o">(</span><span class="s">"appname"</span><span class="o">,</span> <span class="kc">true</span><span class="o">,</span> <span class="s">"Application Name. Default value - DistributedShell"</span><span class="o">);</span>
+    <span class="n">opts</span><span class="o">.</span><span class="na">addOption</span><span class="o">(</span><span class="s">"priority"</span><span class="o">,</span> <span class="kc">true</span><span class="o">,</span> <span class="s">"Application Priority. Default 0"</span><span class="o">);</span>
+<span class="o">}</span>
+</code></pre>
+</div>
+<h4 id="2-初始化">2 初始化</h4>
+<p>init会解析命令行传入的参数，例如使用的jar包、内存大小、cpu个数等。
+代码里使用GnuParser解析：init时定义所有的参数opts（可以认为是一个模板），然后将opts和实际的args传入解析后得到一个CommnadLine对象，后面查询选项直接操作该CommnadLine对象即可，如<code class="highlighter-rouge">cliParser.hasOption("help")</code>和<code class="highlighter-rouge">cliParser.getOptionValue("jar")</code>。</p>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>  <span class="kd">public</span> <span class="kt">boolean</span> <span class="nf">init</span><span class="o">(</span><span class="n">String</span><span class="o">[]</span> <span class="n">args</span><span class="o">)</span> <span class="kd">throws</span> <span class="n">ParseException</span> <span class="o">{</span>
+    <span class="n">CommandLine</span> <span class="n">cliParser</span> <span class="o">=</span> <span class="k">new</span> <span class="n">GnuParser</span><span class="o">().</span><span class="na">parse</span><span class="o">(</span><span class="n">opts</span><span class="o">,</span> <span class="n">args</span><span class="o">);</span>
+    <span class="n">amMemory</span> <span class="o">=</span> <span class="n">Integer</span><span class="o">.</span><span class="na">parseInt</span><span class="o">(</span><span class="n">cliParser</span><span class="o">.</span><span class="na">getOptionValue</span><span class="o">(</span><span class="s">"master_memory"</span><span class="o">,</span> <span class="s">"10"</span><span class="o">));</span>
+    <span class="n">amVCores</span> <span class="o">=</span> <span class="n">Integer</span><span class="o">.</span><span class="na">parseInt</span><span class="o">(</span><span class="n">cliParser</span><span class="o">.</span><span class="na">getOptionValue</span><span class="o">(</span><span class="s">"master_vcores"</span><span class="o">,</span> <span class="s">"1"</span><span class="o">));</span>
+    <span class="n">shellCommand</span> <span class="o">=</span> <span class="n">cliParser</span><span class="o">.</span><span class="na">getOptionValue</span><span class="o">(</span><span class="s">"shell_command"</span><span class="o">);</span>
+    <span class="n">appMasterJar</span> <span class="o">=</span> <span class="n">cliParser</span><span class="o">.</span><span class="na">getOptionValue</span><span class="o">(</span><span class="s">"jar"</span><span class="o">);</span>
+    <span class="o">...</span>
+</code></pre>
+</div>
+<h4 id="3-运行">3 运行</h4>
+<ul>
+<li>先启动yarnClient，会建立跟RM的RPC连接，之后就跟调用本地方法一样。通过此yarnClient查询NM个数、NM详细信息（ID/地址/Container个数等）、Queue info（其实没用到，示例里只是打印了下调试用）。</li>
+</ul>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code><span class="kd">public</span> <span class="kd">class</span> <span class="nc">Client</span> <span class="o">{</span>
+  <span class="kd">public</span> <span class="kt">boolean</span> <span class="nf">run</span><span class="o">()</span> <span class="kd">throws</span> <span class="n">IOException</span><span class="o">,</span> <span class="n">YarnException</span> <span class="o">{</span>
+    <span class="n">yarnClient</span><span class="o">.</span><span class="na">start</span><span class="o">();</span>
+    <span class="n">YarnClusterMetrics</span> <span class="n">clusterMetrics</span> <span class="o">=</span> <span class="n">yarnClient</span><span class="o">.</span><span class="na">getYarnClusterMetrics</span><span class="o">();</span>
+    <span class="n">List</span><span class="o">&lt;</span><span class="n">NodeReport</span><span class="o">&gt;</span> <span class="n">clusterNodeReports</span> <span class="o">=</span> <span class="n">yarnClient</span><span class="o">.</span><span class="na">getNodeReports</span><span class="o">(</span>
+</code></pre>
+</div>
+<ul>
+<li>收集提交AM所需的信息。</li>
+</ul>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>    <span class="n">YarnClientApplication</span> <span class="n">app</span> <span class="o">=</span> <span class="n">yarnClient</span><span class="o">.</span><span class="na">createApplication</span><span class="o">();</span>	<span class="c1">//创建app</span>
+    <span class="n">GetNewApplicationResponse</span> <span class="n">appResponse</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="na">getNewApplicationResponse</span><span class="o">();</span>
+<span class="o">...</span>
+    <span class="n">ApplicationSubmissionContext</span> <span class="n">appContext</span> <span class="o">=</span> <span class="n">app</span><span class="o">.</span><span class="na">getApplicationSubmissionContext</span><span class="o">();</span>
+    <span class="c1">//AM需要的本地资源，如jar包、log文件</span>
+    <span class="n">Map</span><span class="o">&lt;</span><span class="n">String</span><span class="o">,</span> <span class="n">LocalResource</span><span class="o">&gt;</span> <span class="n">localResources</span> <span class="o">=</span> <span class="k">new</span> <span class="n">HashMap</span><span class="o">&lt;</span><span class="n">String</span><span class="o">,</span> <span class="n">LocalResource</span><span class="o">&gt;();</span>
+
+    <span class="n">FileSystem</span> <span class="n">fs</span> <span class="o">=</span> <span class="n">FileSystem</span><span class="o">.</span><span class="na">get</span><span class="o">(</span><span class="n">conf</span><span class="o">);</span>
+    <span class="n">addToLocalResources</span><span class="o">(</span><span class="n">fs</span><span class="o">,</span> <span class="n">appMasterJar</span><span class="o">,</span> <span class="n">appMasterJarPath</span><span class="o">,</span> <span class="n">appId</span><span class="o">.</span><span class="na">toString</span><span class="o">(),</span>
+        <span class="n">localResources</span><span class="o">,</span> <span class="kc">null</span><span class="o">);</span>
+    <span class="o">...</span>	<span class="c1">//添加localResource</span>
+
+    <span class="n">vargs</span><span class="o">.</span><span class="na">add</span><span class="o">(</span><span class="n">Environment</span><span class="o">.</span><span class="na">JAVA_HOME</span><span class="o">.</span><span class="err">$$</span><span class="o">()</span> <span class="o">+</span> <span class="s">"/bin/java"</span><span class="o">);</span>
+    <span class="n">vargs</span><span class="o">.</span><span class="na">add</span><span class="o">(</span><span class="s">"-Xmx"</span> <span class="o">+</span> <span class="n">amMemory</span> <span class="o">+</span> <span class="s">"m"</span><span class="o">);</span>
+    <span class="n">vargs</span><span class="o">.</span><span class="na">add</span><span class="o">(</span><span class="n">appMasterMainClass</span><span class="o">);</span>
+<span class="o">...</span>
+    <span class="k">for</span> <span class="o">(</span><span class="n">CharSequence</span> <span class="n">str</span> <span class="o">:</span> <span class="n">vargs</span><span class="o">)</span> <span class="o">{</span>
+      <span class="n">command</span><span class="o">.</span><span class="na">append</span><span class="o">(</span><span class="n">str</span><span class="o">).</span><span class="na">append</span><span class="o">(</span><span class="s">" "</span><span class="o">);</span>	<span class="c1">//重新组织命令行</span>
+    <span class="o">}</span>
+	<span class="c1">//创建Container加载上下文，包含本地资源，环境变量，实际命令。</span>
+    <span class="n">ContainerLaunchContext</span> <span class="n">amContainer</span> <span class="o">=</span> <span class="n">ContainerLaunchContext</span><span class="o">.</span><span class="na">newInstance</span><span class="o">(</span>
+      <span class="n">localResources</span><span class="o">,</span> <span class="n">env</span><span class="o">,</span> <span class="n">commands</span><span class="o">,</span> <span class="kc">null</span><span class="o">,</span> <span class="kc">null</span><span class="o">,</span> <span class="kc">null</span><span class="o">);</span>
+
+    <span class="n">Resource</span> <span class="n">capability</span> <span class="o">=</span> <span class="n">Resource</span><span class="o">.</span><span class="na">newInstance</span><span class="o">(</span><span class="n">amMemory</span><span class="o">,</span> <span class="n">amVCores</span><span class="o">);</span>
+    <span class="n">appContext</span><span class="o">.</span><span class="na">setResource</span><span class="o">(</span><span class="n">capability</span><span class="o">);</span>		<span class="c1">//请求使用的内存、cpu</span>
+
+    <span class="n">appContext</span><span class="o">.</span><span class="na">setAMContainerSpec</span><span class="o">(</span><span class="n">amContainer</span><span class="o">);</span>
+    <span class="n">appContext</span><span class="o">.</span><span class="na">setQueue</span><span class="o">(</span><span class="n">amQueue</span><span class="o">);</span>
+</code></pre>
+</div>
+<p>重新组织出来的commands如下：</p>
+<div class="language-bash highlighter-rouge"><pre class="highlight"><code><span class="nv">$JAVA_HOME</span>/bin/java -Xmx10m org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster --container_memory 10
+</code></pre>
+</div>
+<ul>
+<li>提交AM（即appContext），并启动监控。
+Client只关心自己提交到RM的AM是否正常运行，而AM内部的多个task，由AM管理。如果Client要查询应用程序的任务信息，需要自己设计与AM的交互。</li>
+</ul>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>    <span class="n">yarnClient</span><span class="o">.</span><span class="na">submitApplication</span><span class="o">(</span><span class="n">appContext</span><span class="o">);</span>   <span class="c1">//客户端提交AM到RM</span>
+    <span class="k">return</span> <span class="nf">monitorApplication</span><span class="o">(</span><span class="n">appId</span><span class="o">);</span>
+</code></pre>
+</div>
+<p>总的来说，Client做的事情比较简单，即建立与RM的连接，提交AM，监控AM运行状态。</p>
+<blockquote>
+<p>有个疑问，走读代码没有看到jar包是怎么送到NM上去的。</p>
+</blockquote>
+<h3 id="三-application-master解析">三 Application Master解析</h3>
+<p>AM简化框架如下：</p>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>      <span class="kt">boolean</span> <span class="n">doRun</span> <span class="o">=</span> <span class="n">appMaster</span><span class="o">.</span><span class="na">init</span><span class="o">(</span><span class="n">args</span><span class="o">);</span>
+      <span class="k">if</span> <span class="o">(!</span><span class="n">doRun</span><span class="o">)</span> <span class="o">{</span>
+        <span class="n">System</span><span class="o">.</span><span class="na">exit</span><span class="o">(</span><span class="mi">0</span><span class="o">);</span>
+      <span class="o">}</span>
+      <span class="n">appMaster</span><span class="o">.</span><span class="na">run</span><span class="o">();</span>
+      <span class="n">result</span> <span class="o">=</span> <span class="n">appMaster</span><span class="o">.</span><span class="na">finish</span><span class="o">();</span>
+</code></pre>
+</div>
+<p>yarn抽象了两个编程库，AMRMClient和NMClient(AM和RM都可以用)，简化AM编程。</p>
+<h4 id="1-设置rmnm消息的异步处理方法">1 设置RM、NM消息的异步处理方法</h4>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>    <span class="n">AMRMClientAsync</span><span class="o">.</span><span class="na">CallbackHandler</span> <span class="n">allocListener</span> <span class="o">=</span> <span class="k">new</span> <span class="n">RMCallbackHandler</span><span class="o">();</span>
+    <span class="n">amRMClient</span> <span class="o">=</span> <span class="n">AMRMClientAsync</span><span class="o">.</span><span class="na">createAMRMClientAsync</span><span class="o">(</span><span class="mi">1000</span><span class="o">,</span> <span class="n">allocListener</span><span class="o">);</span>
+    <span class="n">amRMClient</span><span class="o">.</span><span class="na">init</span><span class="o">(</span><span class="n">conf</span><span class="o">);</span>
+    <span class="n">amRMClient</span><span class="o">.</span><span class="na">start</span><span class="o">();</span>
+
+    <span class="n">containerListener</span> <span class="o">=</span> <span class="n">createNMCallbackHandler</span><span class="o">();</span>
+    <span class="n">nmClientAsync</span> <span class="o">=</span> <span class="k">new</span> <span class="n">NMClientAsyncImpl</span><span class="o">(</span><span class="n">containerListener</span><span class="o">);</span>
+    <span class="n">nmClientAsync</span><span class="o">.</span><span class="na">init</span><span class="o">(</span><span class="n">conf</span><span class="o">);</span>
+    <span class="n">nmClientAsync</span><span class="o">.</span><span class="na">start</span><span class="o">();</span>
+</code></pre>
+</div>
+<h4 id="2-向rm注册">2 向RM注册</h4>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>    <span class="n">RegisterApplicationMasterResponse</span> <span class="n">response</span> <span class="o">=</span> <span class="n">amRMClient</span><span class="o">.</span><span class="na">registerApplicationMaster</span><span class="o">(</span><span class="n">appMasterHostname</span><span class="o">,</span>
+        <span class="n">appMasterRpcPort</span><span class="o">,</span> <span class="n">appMasterTrackingUrl</span><span class="o">);</span>
+</code></pre>
+</div>
+<h4 id="3-计算需要的container向rm发起请求">3 计算需要的Container，向RM发起请求</h4>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>    <span class="c1">// Setup ask for containers from RM</span>
+    <span class="c1">// Send request for containers to RM</span>
+    <span class="c1">// Until we get our fully allocated quota, we keep on polling RM for</span>
+    <span class="c1">// containers</span>
+    <span class="c1">// Keep looping until all the containers are launched and shell script</span>
+    <span class="c1">// executed on them ( regardless of success/failure).</span>
+    <span class="k">for</span> <span class="o">(</span><span class="kt">int</span> <span class="n">i</span> <span class="o">=</span> <span class="mi">0</span><span class="o">;</span> <span class="n">i</span> <span class="o">&lt;</span> <span class="n">numTotalContainersToRequest</span><span class="o">;</span> <span class="o">++</span><span class="n">i</span><span class="o">)</span> <span class="o">{</span>
+      <span class="n">ContainerRequest</span> <span class="n">containerAsk</span> <span class="o">=</span> <span class="n">setupContainerAskForRM</span><span class="o">();</span>
+      <span class="n">amRMClient</span><span class="o">.</span><span class="na">addContainerRequest</span><span class="o">(</span><span class="n">containerAsk</span><span class="o">);</span>		<span class="c1">//请求指定个数的Container</span>
+    <span class="o">}</span>
+
+  <span class="kd">private</span> <span class="n">ContainerRequest</span> <span class="nf">setupContainerAskForRM</span><span class="o">()</span> <span class="o">{</span>
+    <span class="n">Resource</span> <span class="n">capability</span> <span class="o">=</span> <span class="n">Resource</span><span class="o">.</span><span class="na">newInstance</span><span class="o">(</span><span class="n">containerMemory</span><span class="o">,</span>
+      <span class="n">containerVirtualCores</span><span class="o">);</span>		<span class="c1">//指定需要的memory/cpu能力</span>
+    <span class="n">ContainerRequest</span> <span class="n">request</span> <span class="o">=</span> <span class="k">new</span> <span class="n">ContainerRequest</span><span class="o">(</span><span class="n">capability</span><span class="o">,</span> <span class="kc">null</span><span class="o">,</span> <span class="kc">null</span><span class="o">,</span>
+        <span class="n">pri</span><span class="o">);</span>
+
+</code></pre>
+</div>
+<p>好吧，先假设上面的<code class="highlighter-rouge">addContainerRequest</code>会向RM发送请求。对于AM来说，接下来就是等待RM回消息告知分配的Container。</p>
+<blockquote>
+<p>Q：注释里说这里会一直循环，怎么理解？按说发起Container请求以后，异步等待RM的应答，在相应的处理中加载任务（前面已经注册了AMRM的回调方法）就行了。</p>
+</blockquote>
+<h4 id="4-rm分配container给amam启动任务">4 RM分配Container给AM，AM启动任务</h4>
+<p><strong>RMCallbackHandler</strong>
+RM消息的响应，由<code class="highlighter-rouge">RMCallbackHandler</code>处理。示例中主要对前两种消息进行了处理。</p>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>  <span class="kd">private</span> <span class="kd">class</span> <span class="nc">RMCallbackHandler</span> <span class="kd">implements</span> <span class="n">AMRMClientAsync</span><span class="o">.</span><span class="na">CallbackHandler</span> <span class="o">{</span>
+    <span class="c1">//处理消息：Container执行完毕。在RM返回的心跳应答中携带。如果心跳应答中有已完成和新分配两种Container，先处理已完成</span>
+    <span class="kd">public</span> <span class="kt">void</span> <span class="nf">onContainersCompleted</span><span class="o">(</span><span class="n">List</span><span class="o">&lt;</span><span class="n">ContainerStatus</span><span class="o">&gt;</span> <span class="n">completedContainers</span><span class="o">)</span> <span class="o">{</span>
+<span class="o">...</span>
+    <span class="c1">//处理消息：RM新分配Container。在RM返回的心跳应答中携带</span>
+    <span class="kd">public</span> <span class="kt">void</span> <span class="nf">onContainersAllocated</span><span class="o">(</span><span class="n">List</span><span class="o">&lt;</span><span class="n">Container</span><span class="o">&gt;</span> <span class="n">allocatedContainers</span><span class="o">)</span> <span class="o">{</span>
+
+    <span class="kd">public</span> <span class="kt">void</span> <span class="nf">onShutdownRequest</span><span class="o">()</span> <span class="o">{</span><span class="n">done</span> <span class="o">=</span> <span class="kc">true</span><span class="o">;}</span>
+
+    <span class="c1">//节点状态变化</span>
+    <span class="kd">public</span> <span class="kt">void</span> <span class="nf">onNodesUpdated</span><span class="o">(</span><span class="n">List</span><span class="o">&lt;</span><span class="n">NodeReport</span><span class="o">&gt;</span> <span class="n">updatedNodes</span><span class="o">)</span> <span class="o">{}</span>
+
+    <span class="kd">public</span> <span class="kt">float</span> <span class="nf">getProgress</span><span class="o">()</span> <span class="o">{</span>
+</code></pre>
+</div>
+<p><code class="highlighter-rouge">onContainersAllocated</code>收到分配的Container之后，会提交任务到NM。</p>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>    <span class="kd">public</span> <span class="kt">void</span> <span class="nf">onContainersAllocated</span><span class="o">(</span><span class="n">List</span><span class="o">&lt;</span><span class="n">Container</span><span class="o">&gt;</span> <span class="n">allocatedContainers</span><span class="o">)</span> <span class="o">{</span>
+        <span class="n">LaunchContainerRunnable</span> <span class="n">runnableLaunchContainer</span> <span class="o">=</span>   <span class="c1">//创建runnable容器</span>
+            <span class="k">new</span> <span class="nf">LaunchContainerRunnable</span><span class="o">(</span><span class="n">allocatedContainer</span><span class="o">,</span> <span class="n">containerListener</span><span class="o">);</span>
+        <span class="n">Thread</span> <span class="n">launchThread</span> <span class="o">=</span> <span class="k">new</span> <span class="n">Thread</span><span class="o">(</span><span class="n">runnableLaunchContainer</span><span class="o">);</span>	<span class="c1">//新建线程</span>
+
+        <span class="c1">// launch and start the container on a separate thread to keep</span>
+        <span class="c1">// the main thread unblocked</span>
+        <span class="c1">// as all containers may not be allocated at one go.</span>
+        <span class="n">launchThreads</span><span class="o">.</span><span class="na">add</span><span class="o">(</span><span class="n">launchThread</span><span class="o">);</span>
+        <span class="n">launchThread</span><span class="o">.</span><span class="na">start</span><span class="o">();</span>	<span class="c1">//线程中提交Container到NM，不影响主流程</span>
+</code></pre>
+</div>
+<p>简单分析下<code class="highlighter-rouge">LaunchContainerRunnable</code>。该类实现自Runnable，其run方法准备任务命令（本例即为<code class="highlighter-rouge">date</code>）。</p>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>  <span class="kd">private</span> <span class="kd">class</span> <span class="nc">LaunchContainerRunnable</span> <span class="kd">implements</span> <span class="n">Runnable</span> <span class="o">{</span>
+    <span class="kd">public</span> <span class="nf">LaunchContainerRunnable</span><span class="o">(</span>
+        <span class="n">Container</span> <span class="n">lcontainer</span><span class="o">,</span> <span class="n">NMCallbackHandler</span> <span class="n">containerListener</span><span class="o">)</span> <span class="o">{</span>
+      <span class="k">this</span><span class="o">.</span><span class="na">container</span> <span class="o">=</span> <span class="n">lcontainer</span><span class="o">;</span>		<span class="c1">//创建时记录待使用的Container</span>
+      <span class="k">this</span><span class="o">.</span><span class="na">containerListener</span> <span class="o">=</span> <span class="n">containerListener</span><span class="o">;</span>
+    <span class="o">}</span>
+    <span class="kd">public</span> <span class="kt">void</span> <span class="nf">run</span><span class="o">()</span> <span class="o">{</span>
+      <span class="n">vargs</span><span class="o">.</span><span class="na">add</span><span class="o">(</span><span class="n">shellCommand</span><span class="o">);</span>		<span class="c1">//待执行的shell命令</span>
+      <span class="n">vargs</span><span class="o">.</span><span class="na">add</span><span class="o">(</span><span class="n">shellArgs</span><span class="o">);</span>			<span class="c1">//shell命令参数</span>
+      <span class="n">List</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;</span> <span class="n">commands</span> <span class="o">=</span> <span class="k">new</span> <span class="n">ArrayList</span><span class="o">&lt;</span><span class="n">String</span><span class="o">&gt;();</span>
+      <span class="n">commands</span><span class="o">.</span><span class="na">add</span><span class="o">(</span><span class="n">command</span><span class="o">.</span><span class="na">toString</span><span class="o">());</span>	<span class="c1">//转为commands</span>
+
+      <span class="c1">//根据命令、环境变量、本地资源等创建Container加载上下文</span>
+      <span class="n">ContainerLaunchContext</span> <span class="n">ctx</span> <span class="o">=</span> <span class="n">ContainerLaunchContext</span><span class="o">.</span><span class="na">newInstance</span><span class="o">(</span>
+              <span class="n">localResources</span><span class="o">,</span> <span class="n">shellEnv</span><span class="o">,</span> <span class="n">commands</span><span class="o">,</span> <span class="kc">null</span><span class="o">,</span> <span class="n">allTokens</span><span class="o">.</span><span class="na">duplicate</span><span class="o">(),</span> <span class="kc">null</span><span class="o">);</span>
+      <span class="n">containerListener</span><span class="o">.</span><span class="na">addContainer</span><span class="o">(</span><span class="n">container</span><span class="o">.</span><span class="na">getId</span><span class="o">(),</span> <span class="n">container</span><span class="o">);</span>
+      <span class="c1">//异步启动Container</span>
+      <span class="n">nmClientAsync</span><span class="o">.</span><span class="na">startContainerAsync</span><span class="o">(</span><span class="n">container</span><span class="o">,</span> <span class="n">ctx</span><span class="o">);</span>
+</code></pre>
+</div>
+<p><code class="highlighter-rouge">onContainersCompleted</code>的功能比较简单，收到Container执行完毕的消息，检查其执行结果，如果执行失败，则重新发起请求，直到全部完成。</p>
+<p><strong>NMCallbackHandler</strong>
+NM消息的响应，由<code class="highlighter-rouge">NMCallbackHandler</code>处理。</p>
+<p>在distShell示例里，回调句柄对NM通知过来的各种事件的处理比较简单，只是修改AM维护的Container执行完成、失败的个数。这样等到有Container执行完毕后，可以重启发起请求。失败处理和上面Container执行完毕消息的处理类似，达到了上面问题里所说的loopback效果。</p>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code>  <span class="kd">static</span> <span class="kd">class</span> <span class="nc">NMCallbackHandler</span>
+    <span class="kd">implements</span> <span class="n">NMClientAsync</span><span class="o">.</span><span class="na">CallbackHandler</span> <span class="o">{</span>
+
+    <span class="nd">@Override</span>
+    <span class="kd">public</span> <span class="kt">void</span> <span class="nf">onContainerStopped</span><span class="o">(</span><span class="n">ContainerId</span> <span class="n">containerId</span><span class="o">)</span> <span class="o">{</span>
+
+    <span class="nd">@Override</span>
+    <span class="kd">public</span> <span class="kt">void</span> <span class="nf">onContainerStatusReceived</span><span class="o">(</span><span class="n">ContainerId</span> <span class="n">containerId</span><span class="o">,</span>
+
+    <span class="nd">@Override</span>
+    <span class="kd">public</span> <span class="kt">void</span> <span class="nf">onContainerStarted</span><span class="o">(</span><span class="n">ContainerId</span> <span class="n">containerId</span><span class="o">,</span>
+<span class="o">...</span>
+</code></pre>
+</div>
+<p>总的来说，AM做的事就是向RM/NM注册回调函数，然后请求Container；得到Container后提交任务，并跟踪这些任务的执行情况，如果失败了则重新提交，直到全部任务完成。</p>
+<h3 id="四-unmanagedam">四 UnmanagedAM</h3>
+<p>distShell的Client提交AM到RM后，由RM将AM分配到某一个NM上的Container，这样给AM调试带来了困难。yarn提供了一个参数，Client可以设置为Unmanaged，提交AM后，会在客户端本地起一个单独的进程来运行AM。</p>
+<div class="language-java highlighter-rouge"><pre class="highlight"><code><span class="kd">public</span> <span class="kd">class</span> <span class="nc">UnmanagedAMLauncher</span> <span class="o">{</span>
+  <span class="kd">public</span> <span class="kt">void</span> <span class="nf">launchAM</span><span class="o">(</span><span class="n">ApplicationAttemptId</span> <span class="n">attemptId</span><span class="o">)</span>
+    <span class="c1">//创建新进程</span>
+    <span class="n">Process</span> <span class="n">amProc</span> <span class="o">=</span> <span class="n">Runtime</span><span class="o">.</span><span class="na">getRuntime</span><span class="o">().</span><span class="na">exec</span><span class="o">(</span><span class="n">amCmd</span><span class="o">,</span> <span class="n">envAMList</span><span class="o">.</span><span class="na">toArray</span><span class="o">(</span><span class="n">envAM</span><span class="o">));</span>
+    <span class="k">try</span> <span class="o">{</span>
+      <span class="kt">int</span> <span class="n">exitCode</span> <span class="o">=</span> <span class="n">amProc</span><span class="o">.</span><span class="na">waitFor</span><span class="o">();</span>  <span class="c1">//等待AM进程结束</span>
+    <span class="o">}</span> <span class="k">finally</span> <span class="o">{</span>
+      <span class="n">amCompleted</span> <span class="o">=</span> <span class="kc">true</span><span class="o">;</span>
+    <span class="o">}</span>
+
+  <span class="kd">public</span> <span class="kt">boolean</span> <span class="nf">run</span><span class="o">()</span> <span class="kd">throws</span> <span class="n">IOException</span><span class="o">,</span> <span class="n">YarnException</span> <span class="o">{</span>
+      <span class="n">appContext</span><span class="o">.</span><span class="na">setUnmanagedAM</span><span class="o">(</span><span class="kc">true</span><span class="o">);</span>		<span class="c1">//设置为Unmanaged</span>
+      <span class="n">rmClient</span><span class="o">.</span><span class="na">submitApplication</span><span class="o">(</span><span class="n">appContext</span><span class="o">);</span>	<span class="c1">//提交AM</span>
+
+      <span class="n">ApplicationReport</span> <span class="n">appReport</span> <span class="o">=</span>		<span class="c1">//监控AM状态，如果状态变为ACCEPTED，则跳出循环，launchAM。</span>
+          <span class="n">monitorApplication</span><span class="o">(</span><span class="n">appId</span><span class="o">,</span> <span class="n">EnumSet</span><span class="o">.</span><span class="na">of</span><span class="o">(</span><span class="n">YarnApplicationState</span><span class="o">.</span><span class="na">ACCEPTED</span><span class="o">,</span>
+            <span class="n">YarnApplicationState</span><span class="o">.</span><span class="na">KILLED</span><span class="o">,</span> <span class="n">YarnApplicationState</span><span class="o">.</span><span class="na">FAILED</span><span class="o">,</span>
+            <span class="n">YarnApplicationState</span><span class="o">.</span><span class="na">FINISHED</span><span class="o">));</span>
+
+      <span class="k">if</span> <span class="o">(</span><span class="n">appReport</span><span class="o">.</span><span class="na">getYarnApplicationState</span><span class="o">()</span> <span class="o">==</span> <span class="n">YarnApplicationState</span><span class="o">.</span><span class="na">ACCEPTED</span><span class="o">)</span> <span class="o">{</span>
+        <span class="n">launchAM</span><span class="o">(</span><span class="n">attemptId</span><span class="o">);</span>
+</code></pre>
+</div>
+<p>附：命令执行输出</p>
+<div class="language-bash highlighter-rouge"><pre class="highlight"><code>15/05/05 09:12:22 INFO distributedshell.Client: Initializing Client
+15/05/05 09:12:22 INFO distributedshell.Client: Running Client
+15/05/05 09:12:23 INFO client.RMProxy: Connecting to ResourceManager at ty11.dtdream.com/10.168.250.59:8050
+15/05/05 09:12:23 INFO distributedshell.Client: Got Cluster metric info from ASM, <span class="nv">numNodeManagers</span><span class="o">=</span>3
+15/05/05 09:12:23 INFO distributedshell.Client: Got Cluster node info from ASM
+15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM <span class="k">for</span>, <span class="nv">nodeId</span><span class="o">=</span>ty11.dtdream.com:45454, nodeAddressty11.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0
+15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM <span class="k">for</span>, <span class="nv">nodeId</span><span class="o">=</span>ty10.dtdream.com:45454, nodeAddressty10.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0
+15/05/05 09:12:23 INFO distributedshell.Client: Got node report from ASM <span class="k">for</span>, <span class="nv">nodeId</span><span class="o">=</span>ty12.dtdream.com:45454, nodeAddressty12.dtdream.com:8042, nodeRackName/default-rack, nodeNumContainers0
+15/05/05 09:12:23 INFO distributedshell.Client: Queue info, <span class="nv">queueName</span><span class="o">=</span>default, <span class="nv">queueCurrentCapacity</span><span class="o">=</span>0.0, <span class="nv">queueMaxCapacity</span><span class="o">=</span>1.0, <span class="nv">queueApplicationCount</span><span class="o">=</span>0, <span class="nv">queueChildQueueCount</span><span class="o">=</span>0
+15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info <span class="k">for </span>Queue, <span class="nv">queueName</span><span class="o">=</span>root, <span class="nv">userAcl</span><span class="o">=</span>SUBMIT_APPLICATIONS
+15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info <span class="k">for </span>Queue, <span class="nv">queueName</span><span class="o">=</span>root, <span class="nv">userAcl</span><span class="o">=</span>ADMINISTER_QUEUE
+15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info <span class="k">for </span>Queue, <span class="nv">queueName</span><span class="o">=</span>default, <span class="nv">userAcl</span><span class="o">=</span>SUBMIT_APPLICATIONS
+15/05/05 09:12:23 INFO distributedshell.Client: User ACL Info <span class="k">for </span>Queue, <span class="nv">queueName</span><span class="o">=</span>default, <span class="nv">userAcl</span><span class="o">=</span>ADMINISTER_QUEUE
+15/05/05 09:12:23 INFO distributedshell.Client: Max mem capabililty of resources <span class="k">in </span>this cluster 4096
+15/05/05 09:12:23 INFO distributedshell.Client: Copy App Master jar from <span class="nb">local </span>filesystem and add to <span class="nb">local </span>environment
+15/05/05 09:12:23 INFO distributedshell.Client: Set the environment <span class="k">for </span>the application master
+15/05/05 09:12:23 INFO distributedshell.Client: Setting up app master <span class="nb">command
+</span>15/05/05 09:12:23 INFO distributedshell.Client: Completed setting up app master <span class="nb">command</span> <span class="nv">$JAVA_HOME</span>/bin/java -Xmx10m org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster --container_memory 10 --num_containers 10 --priority 0 --shell_command /bin/date  1&gt;&lt;LOG_DIR&gt;/AppMaster.stdout 2&gt;&lt;LOG_DIR&gt;/AppMaster.stderr
+15/05/05 09:12:23 INFO distributedshell.Client: Submitting application to ASM
+15/05/05 09:12:23 INFO impl.YarnClientImpl: Submitted application application_1430207548681_0011 to ResourceManager at ty11.dtdream.com/10.168.250.59:8050
+15/05/05 09:12:24 INFO distributedshell.Client: Got application report from ASM <span class="k">for</span>, <span class="nv">appId</span><span class="o">=</span>11, <span class="nv">clientToAMToken</span><span class="o">=</span>null, <span class="nv">appDiagnostics</span><span class="o">=</span>, <span class="nv">appMasterHost</span><span class="o">=</span>N/A, <span class="nv">appQueue</span><span class="o">=</span>default, <span class="nv">appMasterRpcPort</span><span class="o">=</span>-1, <span class="nv">appStartTime</span><span class="o">=</span>1430788343925, <span class="nv">yarnAppState</span><span class="o">=</span>ACCEPTED, <span class="nv">distributedFinalState</span><span class="o">=</span>UNDEFINED, <span class="nv">appTrackingUrl</span><span class="o">=</span>http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, <span class="nv">appUser</span><span class="o">=</span>hdfs
+15/05/05 09:12:25 INFO distributedshell.Client: Got application report from ASM <span class="k">for</span>, <span class="nv">appId</span><span class="o">=</span>11, <span class="nv">clientToAMToken</span><span class="o">=</span>null, <span class="nv">appDiagnostics</span><span class="o">=</span>, <span class="nv">appMasterHost</span><span class="o">=</span>ty10.dtdream.com/10.252.142.223, <span class="nv">appQueue</span><span class="o">=</span>default, <span class="nv">appMasterRpcPort</span><span class="o">=</span>-1, <span class="nv">appStartTime</span><span class="o">=</span>1430788343925, <span class="nv">yarnAppState</span><span class="o">=</span>RUNNING, <span class="nv">distributedFinalState</span><span class="o">=</span>UNDEFINED, <span class="nv">appTrackingUrl</span><span class="o">=</span>http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, <span class="nv">appUser</span><span class="o">=</span>hdfs
+...
+15/05/05 09:12:32 INFO distributedshell.Client: Got application report from ASM <span class="k">for</span>, <span class="nv">appId</span><span class="o">=</span>11, <span class="nv">clientToAMToken</span><span class="o">=</span>null, <span class="nv">appDiagnostics</span><span class="o">=</span>, <span class="nv">appMasterHost</span><span class="o">=</span>ty10.dtdream.com/10.252.142.223, <span class="nv">appQueue</span><span class="o">=</span>default, <span class="nv">appMasterRpcPort</span><span class="o">=</span>-1, <span class="nv">appStartTime</span><span class="o">=</span>1430788343925, <span class="nv">yarnAppState</span><span class="o">=</span>FINISHED, <span class="nv">distributedFinalState</span><span class="o">=</span>SUCCEEDED, <span class="nv">appTrackingUrl</span><span class="o">=</span>http://ty11.dtdream.com:8088/proxy/application_1430207548681_0011/, <span class="nv">appUser</span><span class="o">=</span>hdfs
+15/05/05 09:12:32 INFO distributedshell.Client: Application has completed successfully. Breaking monitoring loop
+15/05/05 09:12:32 INFO distributedshell.Client: Application completed successfully
+
+</code></pre>
+</div>
+</article>
+<div id="related-posts">
+<h3>Related posts</h3>
+<ul>
+<li>
+<a href="/tech/2016/05/19/spark-10-hive-on-spark.html" data-score="1.9842532730733435">Spark（十）：Hive on Spark配置</a>
+</li>
+<li>
+<a href="/tech/2016/06/07/kerberos-1.html" data-score="1.8632464166745333">Kerberos从入门到放弃（一）：HDFS使用kerberos</a>
+</li>
+<li>
+<a href="/tech/2016/10/19/zeppelin-on-yarn.html" data-score="1.3257848607357794">Zeppelin配置spark interpreter on yarn</a>
+</li>
+<li>
+<a href="/life/2016/10/11/ndsl.html" data-score="1.233113928630761">为ndsl换触摸屏</a>
+</li>
+<li>
+<a href="/tech/2016/06/11/kerberos-2.html" data-score="1.1112708812412182">Kerberos从入门到放弃（二）：YARN、Spark、Hive使用kerberos</a>
+</li>
+</ul>
+</div>
+<section class="tags">
+<strong>Tags:</strong> <a href="/tag/yarn">yarn</a>,&nbsp;<a href="/tag/hadoop">hadoop</a>
+</section>
+<hr>
+<style>
+  .w3-right{float:right!important}
+</style>
+<div>
+<a href="/tech/2015/05/06/python-homework-1.html" title="python学习作业（一）">上一篇：python学习作业（一）</a>
+<a class="w3-right" href="/tech/2015/04/30/mesos.html" title="笔记：mesos简介">下一篇：笔记：mesos简介</a>
+</div>
+<section class="rss">
+<p class="rss-subscribe text"><strong>Subscribe <a href="/feed.xml">via RSS</a></strong></p>
+</section>
+<section class="share">
+<span>Share: </span>
+<a href="//twitter.com/share?text=yarn%EF%BC%88%E4%BA%8C%EF%BC%89%EF%BC%9AdistributedShell%E5%92%8CUnmanaged+AM%E7%A4%BA%E4%BE%8B%E4%BB%A3%E7%A0%81%E8%A7%A3%E6%9E%90&url=http://ieevee.com/tech/2015/05/05/yarn-dist-shell.html&via=瓶子" onclick="window.open(this.href, 'twitter-share', 'width=550,height=255');return false;">
+<i class="fa fa-twitter-square fa-lg"></i>
+</a>
+</section>
+</div>
+</div>
+<style>
+#backtop a { /* back to top button */
+text-align: center;
+line-height: 50px;
+font-size: 16px;
+width:50px;
+height: 50px;
+position: fixed;
+bottom: 10px; /* 小按钮到浏览器底边的距离 */
+right: 60px; /* 小按钮到浏览器右边框的距离 */
+color: rgb(64,120,192); /* 小按钮中文字的颜色 */
+z-index: 1000;
+background: #fff; /* 小按钮底色 */
+padding: auto; /* 小按钮中文字到按钮边缘的距离 */
+border-radius: 50px; /* 小按钮圆角的弯曲程度（半径）*/
+-moz-border-radius: 50px;
+-webkit-border-radius: 50px;
+font-weight: bold; /* 小按钮中文字的粗细 */
+text-decoration: none !important;
+box-shadow:0 1px 2px rgba(0,0,0,.15), 0 1px 0 #ffffff inset;
+}
+#backtop a:hover { /* 小按钮上有鼠标悬停时 */
+background: rgba(64,120,192,0.8); /* 小按钮的底色 */
+color: #fff; /* 文字颜色 */
+}
+</style>
+<div id="backtop">
+<a href="#">TOP</a>
+</div>
+</div>
+<footer class="site-footer">
+<div class="wrapper">
+<h3 class="footer-heading">Zlatan Eevee</h3>
+<div class="site-navigation">
+<p><strong>Site Map</strong></p>
+<ul class="pages">
+<li class="nav-link"><a href="/about">About</a>
+<li class="nav-link"><a href="/archives">Archives</a>
+
+</ul>
+</div>
+<div class="site-contact">
+<p><strong>Contact</strong></p>
+<ul class="social-media-list">
+<li>
+<a href="/cdn-cgi/l/email-protection#462e33242932322a2306212b272f2a6825292b">
+<i class="fa fa-envelope-o"></i>
+<span class="username"><span class="__cf_email__" data-cfemail="1d75687f72696971785d7a707c7471337e7270">[email&#160;protected]</span><script data-cfhash="f9e31" type="text/javascript">/* <![CDATA[ */!function(t,e,r,n,c,a,p){try{t=document.currentScript||function(){for(t=document.getElementsByTagName('script'),e=t.length;e--;)if(t[e].getAttribute('data-cfhash'))return t[e]}();if(t&&(c=t.previousSibling)){p=t.parentNode;if(a=c.getAttribute('data-cfemail')){for(e='',r='0x'+a.substr(0,2)|0,n=2;a.length-n;n+=2)e+='%'+('0'+('0x'+a.substr(n,2)^r).toString(16)).slice(-2);p.replaceChild(document.createTextNode(decodeURIComponent(e)),c)}p.removeChild(t)}}catch(u){}}()/* ]]> */</script></span>
+</a>
+</li>
+<li>
+<a href="https://twitter.com/hubottle" title="Follow me on Twitter">
+<i class="fa fa-twitter"></i>
+<span class="username">瓶子</span>
+</a>
+</li>
+<li>
+<a href="https://github.com/silenceshell" title="Fork me on GitHub">
+<i class="fa fa-github"></i>
+<span class="username">silenceshell</span>
+</a>
+</li>
+</ul>
+</div>
+<div class="site-signature">
+<p class="rss-subscribe text"><strong>Subscribe <a href="/feed.xml">via RSS</a></strong></p>
+<p class="text"></p>
+</div>
+</div>
+</footer>
+
+<script src="//code.jquery.com/jquery-1.11.2.min.js"></script>
+<script src="//cdnjs.cloudflare.com/ajax/libs/highlight.js/8.5/highlight.min.js"></script>
+<script src="//cdnjs.cloudflare.com/ajax/libs/lightbox2/2.7.1/js/lightbox.min.js"></script>
+<script>
+
+$(document).ready(function() {
+
+  // Syntax highlighting
+  hljs.initHighlightingOnLoad();
+
+  // Header
+  var menuToggle = $('#js-mobile-menu').unbind();
+  $('#js-navigation-menu').removeClass("show");
+  menuToggle.on('click', function(e) {
+    e.preventDefault();
+    $('#js-navigation-menu').slideToggle(function(){
+      if($('#js-navigation-menu').is(':hidden')) {
+        $('#js-navigation-menu').removeAttr('style');
+      }
+    });
+  });
+
+
+});
+
+</script>
+<script>/* <![CDATA[ */(function(d,s,a,i,j,r,l,m,t){try{l=d.getElementsByTagName('a');t=d.createElement('textarea');for(i=0;l.length-i;i++){try{a=l[i].href;s=a.indexOf('/cdn-cgi/l/email-protection');m=a.length;if(a&&s>-1&&m>28){j=28+s;s='';if(j<m){r='0x'+a.substr(j,2)|0;for(j+=2;j<m&&a.charAt(j)!='X';j+=2)s+='%'+('0'+('0x'+a.substr(j,2)^r).toString(16)).slice(-2);j++;s=decodeURIComponent(s)+a.substr(j,m-j)}t.innerHTML=s.replace(/</g,'&lt;').replace(/\>/g,'&gt;');l[i].href='mailto:'+t.value}}catch(e){}}}catch(e){}})(document);/* ]]> */</script></body>
+</html>
