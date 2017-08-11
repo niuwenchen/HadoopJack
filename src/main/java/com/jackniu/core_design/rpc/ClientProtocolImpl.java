@@ -1,11 +1,14 @@
 package com.jackniu.core_design.rpc;
 
+import org.apache.hadoop.ipc.ProtocolSignature;
+
 import java.io.IOException;
 
 /**
  * Created by JackNiu on 2017/7/23.
  */
-public class ClientProtocolImpl implements  CLientProtocol {
+public class ClientProtocolImpl implements  CLientProtocol
+{
     public String echo(String value) throws IOException {
         return value;
     }
@@ -19,6 +22,9 @@ public class ClientProtocolImpl implements  CLientProtocol {
 //        return ClientProtocol.versionID;
     }
 
+    public ProtocolSignature getProtocolSignature(String protocol, long clientVersion, int clientMethodsHash) throws IOException {
+        return null;
+    }
 
 
 }

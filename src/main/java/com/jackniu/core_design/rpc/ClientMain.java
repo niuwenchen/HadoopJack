@@ -11,9 +11,10 @@ import java.net.InetSocketAddress;
  */
 public class ClientMain {
     public static void main(String[] args) throws IOException {
-        CLientProtocol proxy=(CLientProtocol)RPC.getProxy(CLientProtocol.class,CLientProtocol.versionID,new InetSocketAddress(2012),new Configuration());
+        CLientProtocol proxy=(CLientProtocol)RPC.getProxy(CLientProtocol.class,CLientProtocol.versionID,new InetSocketAddress("127.0.0.1",2181),new Configuration());
         int result = proxy.add(5,6);
         String results=proxy.echo("result");
+        System.out.println(result);
     }
 }
 
