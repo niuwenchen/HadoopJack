@@ -1,0 +1,16 @@
+package tutorial;
+option java_package="com.jackniu.hadoop_yarn.com.proto";
+option java_outer_classname="StudentProtos";
+
+message Student{
+    required int32 ID=1;
+    required string name=2;
+    required string sex=3;
+
+        message StudentPhone{
+        required  string number=1;
+        optional int32 type=2;
+        }
+    repeated StudentPhone phones=4;
+
+}

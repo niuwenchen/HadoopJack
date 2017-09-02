@@ -68,7 +68,7 @@ public class MyClient {
 
     public MyClient(Configuration conf) throws Exception
     {
-        this("org.apache.hadoop.yarn.applications.distributedshell.ApplicationMaster", conf);
+        this("org.apache.hadoop.yarn.applications.distributedshell.MyApplicationMaster", conf);
     }
     public MyClient(String appMasterMainClass,Configuration conf){
         this.appMasterMainClass=appMasterMainClass;
