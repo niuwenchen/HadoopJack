@@ -19,22 +19,8 @@ public class YarnClient {
     public static void main(String[] args) {
         HadoopYarnProtoRPC rpc=(HadoopYarnProtoRPC)YarnRPC.create(new Configuration());
 //        rpc.getProxy()
-        Server server=rpc.getServer(IClientNamenodeProtocol.class, PBServiceImplIClientNamenodeProtocol.class, new InetSocketAddress(7777), new Configuration(), new SecretManager<TokenIdentifier>() {
-            @Override
-            protected byte[] createPassword(TokenIdentifier identifier) {
-                return new byte[0];
-            }
+//        rpc.getServer(IClientNamenodeProtocol.class, this, this.clientBindAddress, conf, this.rmDTSecretManager, conf.getInt("yarn.resourcemanager.client.thread-count", 50));
 
-            @Override
-            public byte[] retrievePassword(TokenIdentifier identifier) throws InvalidToken {
-                return new byte[0];
-            }
-
-            @Override
-            public TokenIdentifier createIdentifier() {
-                return null;
-            }
-        }, 10);
-        server.start();
+//        server.start();
     }
 }
